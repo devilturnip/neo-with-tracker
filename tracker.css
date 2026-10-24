@@ -3,6 +3,34 @@
    classes the bridge (tracker-bridge.js) adds, or off #side-pane's
    data-mode / data-wide attributes, which only the bridge sets. */
 
+/* Refs (Alt+D / the ◎ Refs button): every passage the tracker has a
+   reference on, tinted and dotted-underlined; declared before the jump
+   flash so the flash still wins where they overlap. */
+::highlight(neo-tracker-refs) {
+  background-color: rgba(201, 168, 106, 0.16);
+  text-decoration: underline dotted rgba(201, 168, 106, 0.75);
+}
+body.light ::highlight(neo-tracker-refs) {
+  background-color: rgba(176, 130, 40, 0.14);
+  text-decoration: underline dotted rgba(150, 105, 20, 0.7);
+}
+/* the label naming what a hovered reference belongs to — like a pop-menu */
+#tracker-refs-tip {
+  position: fixed; z-index: 955; pointer-events: none; max-width: 320px;
+  background: #262626; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 9px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.45); color: #ddd;
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+#tracker-refs-tip[hidden] { display: none; }
+body.light #tracker-refs-tip { background: #fff; border-color: #d9d4ca; color: #2b2926; box-shadow: 0 6px 20px rgba(0,0,0,0.14); }
+/* the bottombar toggle, beside Stickies and styled like it */
+#tracker-refs-toggle { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: 10px; }
+#tracker-refs-toggle:hover { color: #ddd; }
+#tracker-refs-toggle.active { color: var(--accent); }
+.ui-zoomed #tracker-refs-toggle { white-space: nowrap; }
+body.light #tracker-refs-toggle:hover { color: #1c1a17; }
+body.light #tracker-refs-toggle.active { color: var(--accent); }
+
 /* A brief "you are here" flash when a tracker log entry's jump icon lands on
    an exact passage — cleared a couple seconds after it's painted. */
 ::highlight(neo-tracker-jump) { background: #c9a86a; color: #1c1c1c; }

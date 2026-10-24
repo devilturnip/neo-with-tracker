@@ -214,6 +214,48 @@ test('while a tracker dialog is open, neither leaving the pane nor a click outsi
   await js(`window.fetch = window.__realFetch2; trackerReadyUrl = window.__prevUrl2; 0`);
 });
 
+test('Refs tints referenced passages, names them on hover, and Alt+D turns it off', async () => {
+  await js(`
+    window.__prevUrl3 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch3 = window.fetch;
+    window.fetch = (u) => {
+      const url = String(u);
+      if (url.includes('__references')) return Promise.resolve({ ok: true, json: async () => ({ version: 1, byChapter: { 1: [
+        { kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' },
+        { kind: 'quest', id: 'gone', name: 'Gone Quest', label: 'quest', quote: 'not in this text' },
+      ] } }) });
+      if (url.includes('__version')) return Promise.resolve({ ok: true, json: async () => ({ version: 1 }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    };
+    getSelection().removeAllRanges(); 0`);
+  await js(`document.getElementById('tracker-refs-toggle').click()`);
+  await tick(300);
+  assert.equal(await js(`CSS.highlights.get('neo-tracker-refs')?.size ?? 0`), 1, 'the one quote that exists is tinted');
+  assert.equal(await js(`document.getElementById('tracker-refs-toggle').classList.contains('active')`), true);
+  // hover the middle of "Hello" (on screen: hit-testing only sees what's visible)
+  await js(`document.querySelector('.chapter-body').scrollIntoView({ block: 'center' }); 0`);
+  await tick(100);
+  await js(`(() => {
+    const body = document.querySelector('.chapter-body');
+    const node = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode();
+    const r = document.createRange(); r.setStart(node, 1); r.setEnd(node, 3);
+    const b = r.getBoundingClientRect();
+    body.dispatchEvent(new MouseEvent('mousemove', { clientX: b.left + b.width / 2, clientY: b.top + b.height / 2, bubbles: true }));
+  })()`);
+  await tick(100);
+  assert.equal(await js(`(() => { const t = document.getElementById('tracker-refs-tip'); return t && !t.hidden ? t.textContent : null; })()`), 'Hello Sword (item)');
+  // and somewhere that isn't referenced
+  await js(`document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('mousemove', { clientX: 2, clientY: 2, bubbles: true }))`);
+  await tick(100);
+  assert.equal(await js(`document.getElementById('tracker-refs-tip').hidden`), true);
+  assert.equal(await js(`localStorage.getItem('neo-tracker-refs')`), '1', 'remembered for next launch');
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', key: 'd', altKey: true, bubbles: true, cancelable: true }))`);
+  await tick(100);
+  assert.equal(await js(`CSS.highlights.has('neo-tracker-refs')`), false, 'Alt+D turned it off');
+  assert.equal(await js(`localStorage.getItem('neo-tracker-refs')`), '0');
+  await js(`window.fetch = window.__realFetch3; trackerReadyUrl = window.__prevUrl3; 0`);
+});
+
 // The Ctrl+D palette, against a stand-in tracker server: a canned search
 // hit, and a recorded quick-reference post. Nothing here needs the real
 // tracker; trackerReadyUrl is pointed at the stub for these two cases.

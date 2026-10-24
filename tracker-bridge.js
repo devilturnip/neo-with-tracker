@@ -40,6 +40,8 @@ $('#sticky-list').after(trackerElement('<div id="tracker-pane-body"></div>'));
 // the side pane (Notes & Comments) opens from this bottombar button now that
 // the right edge belongs to the tracker (see openSidePane)
 $('#tabs .tab[data-tab="manuscript"]').after(trackerElement('<button id="side-pane-toggle" data-i18n-title title="Notes & Comments" data-i18n-label="Notes & Comments" aria-pressed="false"><span data-i18n>Stickies</span></button>'));
+// tint every passage the tracker has a reference on (see paintTrackerRefs)
+$('#side-pane-toggle').after(trackerElement('<button id="tracker-refs-toggle" data-i18n-title title="Show the tracker’s references in the text (Alt+D)" aria-pressed="false"><span data-i18n>◎ Refs</span></button>'));
 
 /* ================================================================== */
 /*  The side pane's two modes                                           */
@@ -243,6 +245,7 @@ function ensureTrackerPane() {
     // a trailing slash matters for the URLs built from this below
     trackerReadyUrl = result.url.replace(/\/?$/, '/');
     notifyTrackerOfChapter(true); // the dev server is up — post the current chapter now, so it's already there the moment the page's own poll starts (no need to wait on the iframe's load)
+    schedulePaintTrackerRefs(); // Refs left on from last time can paint now
     if (!trackerFrame) {
       trackerFrame = document.createElement('iframe');
       trackerFrame.id = 'tracker-frame';
@@ -511,6 +514,42 @@ function chapterIdForNumber(n) {
 // not" depending purely on how quickly the next jump happened to land.
 let trackerJumpHighlightTimer = null;
 
+// Where a tracker quote sits in a chapter body, as a Range — or null when
+// it can't be found (the text has changed since). Shared by the jump to a
+// passage and the Refs highlighting, which passes the body's lowercased
+// plain text in so a chapter with many references is read once.
+function quoteRange(body, quote, occurrence, lowerText) {
+  // tracker quotes are wrapped '…' — strip that pair back off before
+  // searching, matching the convention its own note-writing side uses
+  const clean = String(quote || '').replace(/^['"‘’“”]/, '').replace(/['"‘’“”]$/, '');
+  if (!clean) return null;
+  // same text-position machinery darlings use to relocate a cut by its
+  // surrounding text (see bodyPlainText/textPosToRange in app.js), just
+  // walked to find a literal match instead of restoring at a remembered
+  // offset. Case-insensitive, matching findRanges' own convention (Find &
+  // Replace) — a quote's case shouldn't be the reason it can't be found.
+  const haystack = lowerText ?? bodyPlainText(body).toLowerCase();
+  const needle = clean.toLowerCase();
+  // Collect every match rather than stopping at the first — occurrence
+  // picks which one (1 = the first, matching how most references don't
+  // carry an occurrence at all and mean exactly that). Clamped to the
+  // last match still found, not treated as "not found", if the text has
+  // since changed and that many no longer exist.
+  const matches = [];
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
+    matches.push(at);
+  }
+  if (matches.length === 0) return null;
+  const idx = matches[Math.min((occurrence || 1) - 1, matches.length - 1)];
+  const startR = textPosToRange(body, idx);
+  const endR = textPosToRange(body, idx + clean.length);
+  if (!startR || !endR) return null;
+  const range = document.createRange();
+  range.setStart(startR.startContainer, startR.startOffset);
+  range.setEnd(endR.startContainer, endR.startOffset);
+  return range;
+}
+
 function jumpToTrackerGoto(n, quote, occurrence) {
   const chId = chapterIdForNumber(n);
   if (!chId) { toast(t("Chapter not found in the open manuscript.")); return; }
@@ -524,38 +563,11 @@ function jumpToTrackerGoto(n, quote, occurrence) {
   if (!quote) return;
   const body = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
   if (!body) return;
-  // tracker quotes are wrapped '…' — strip that pair back off before
-  // searching, matching the convention its own note-writing side uses
-  const clean = quote.replace(/^['"‘’“”]/, '').replace(/['"‘’“”]$/, '');
-  if (!clean) return;
-  // same text-position machinery darlings use to relocate a cut by its
-  // surrounding text (see bodyPlainText/textPosToRange in app.js), just
-  // walked to find a literal match instead of restoring at a remembered
-  // offset. Case-insensitive, matching findRanges' own convention (Find &
-  // Replace) — a quote's case shouldn't be the reason it can't be found.
-  const text = bodyPlainText(body);
-  const needle = clean.toLowerCase();
-  const haystack = text.toLowerCase();
-  // Collect every match rather than stopping at the first — occurrence
-  // picks which one (1 = the first, matching how most references don't
-  // carry an occurrence at all and mean exactly that). Clamped to the
-  // last match still found, not treated as "not found", if the text has
-  // since changed and that many no longer exist.
-  const matches = [];
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
-    matches.push(at);
-  }
-  if (matches.length === 0) {
+  const range = quoteRange(body, quote, occurrence);
+  if (!range) {
     toast(t("Landed on the chapter — couldn't pinpoint the exact passage."));
     return;
   }
-  const idx = matches[Math.min((occurrence || 1) - 1, matches.length - 1)];
-  const startR = textPosToRange(body, idx);
-  const endR = textPosToRange(body, idx + clean.length);
-  if (!startR || !endR) return;
-  const range = document.createRange();
-  range.setStart(startR.startContainer, startR.startOffset);
-  range.setEnd(endR.startContainer, endR.startOffset);
   const scrollTo = range.startContainer.parentElement?.closest?.('p') || body;
   scrollTo.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
   // a brief "you are here" flash, not a sticky mark — same CSS Custom
@@ -803,6 +815,156 @@ document.addEventListener('mousedown', (e) => {
 window.addEventListener('blur', () => closePalette(false));
 
 /* ================================================================== */
+/*  Refs: every referenced passage, tinted (Alt+D or the ◎ Refs button) */
+/* ================================================================== */
+
+// Every reference the tracker stores, painted into the chapters on screen
+// as one CSS highlight, with a small label on hover naming whatever the
+// passage is a reference on — so a passage that's already referenced is
+// obvious before Ctrl+D. The highlight can't carry a tooltip of its own,
+// so the painted ranges are kept here and hit-tested against the cursor.
+let trackerRefsOn = false;
+let trackerRefsPainted = []; // [{ range, names: [...] }]
+let trackerRefsVersion = null;
+let trackerRefsKey = '';
+let trackerRefsPaintTimer = null;
+const TRACKER_REFS = 'neo-tracker-refs';
+
+function clearTrackerRefs() {
+  trackerRefsPainted = [];
+  trackerRefsKey = '';
+  if (window.CSS && CSS.highlights) CSS.highlights.delete(TRACKER_REFS);
+  hideTrackerRefTip();
+}
+
+async function paintTrackerRefs(force) {
+  if (!trackerRefsOn || !trackerReadyUrl || !(window.Highlight && window.CSS && CSS.highlights)) { clearTrackerRefs(); return; }
+  let reply;
+  try { reply = await (await fetch(trackerReadyUrl + '__references')).json(); } catch { return; }
+  if (!trackerRefsOn || !reply || !reply.byChapter) return;
+  const chapters = [...document.querySelectorAll('.chapter[data-id]')];
+  const key = chapters.map((c) => c.dataset.id).join(',');
+  if (!force && reply.version === trackerRefsVersion && key === trackerRefsKey && trackerRefsPainted.length) return;
+  trackerRefsVersion = reply.version;
+  trackerRefsKey = key;
+  const painted = [];
+  for (const chapter of chapters) {
+    const body = chapter.querySelector('.chapter-body');
+    const refs = reply.byChapter[chapterNumber(chapter.dataset.id)];
+    if (!body || !refs) continue;
+    // references sharing a passage are one entry naming them all
+    const byPassage = new Map();
+    const lower = bodyPlainText(body).toLowerCase();
+    for (const ref of refs) {
+      const range = quoteRange(body, ref.quote, ref.occurrence, lower);
+      if (!range) continue;
+      const at = rangeToTextPos(body, range.startContainer, range.startOffset) + ':' + range.toString().length;
+      const entry = byPassage.get(at) || { range, names: [] };
+      const name = ref.name + ' (' + ref.label + ')';
+      if (!entry.names.includes(name)) entry.names.push(name);
+      byPassage.set(at, entry);
+    }
+    painted.push(...byPassage.values());
+  }
+  trackerRefsPainted = painted;
+  CSS.highlights.set(TRACKER_REFS, new Highlight(...painted.map((p) => p.range)));
+}
+
+// Repaint once typing or scrolling settles — the text has moved under the
+// ranges, and other chapters may have come into the DOM.
+function schedulePaintTrackerRefs() {
+  if (!trackerRefsOn) return;
+  clearTimeout(trackerRefsPaintTimer);
+  trackerRefsPaintTimer = setTimeout(() => paintTrackerRefs(true), 800);
+}
+
+async function setTrackerRefs(on) {
+  trackerRefsOn = on;
+  const button = $('#tracker-refs-toggle');
+  button.classList.toggle('active', on);
+  button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  try { localStorage.setItem('neo-tracker-refs', on ? '1' : '0'); } catch { /* not remembered */ }
+  if (!on) { clearTrackerRefs(); return; }
+  if (!trackerReadyUrl) await ensureTrackerPane(); // starts or finds the dev server; the pane stays closed
+  if (!trackerReadyUrl) { toast(t("The tracker isn't available right now.")); return; }
+  paintTrackerRefs(true);
+}
+
+$('#tracker-refs-toggle').onclick = () => setTrackerRefs(!trackerRefsOn);
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented) return;
+  // e.code, not e.key: ⌥D types a character on a Mac
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.code !== 'KeyD') return;
+  e.preventDefault();
+  setTrackerRefs(!trackerRefsOn);
+});
+// A reference added from the drawer or the Ctrl+D palette lights up
+// within a few seconds: re-read only when the tracker says it wrote.
+setInterval(async () => {
+  if (!trackerRefsOn || !trackerReadyUrl) return;
+  let version;
+  try { version = (await (await fetch(trackerReadyUrl + '__version')).json()).version; } catch { return; }
+  if (version !== trackerRefsVersion) paintTrackerRefs(true);
+}, 3000);
+try { if (localStorage.getItem('neo-tracker-refs') === '1') setTrackerRefs(true); } catch { /* nothing kept */ }
+
+// The hover label.
+let trackerRefTip = null;
+let trackerRefTipFrame = 0;
+function hideTrackerRefTip() {
+  if (trackerRefTip) trackerRefTip.hidden = true;
+}
+function showTrackerRefTip(names, x, y) {
+  if (!trackerRefTip) {
+    trackerRefTip = document.createElement('div');
+    trackerRefTip.id = 'tracker-refs-tip';
+    document.body.appendChild(trackerRefTip);
+  }
+  trackerRefTip.textContent = '';
+  for (const name of names) {
+    const line = document.createElement('div');
+    line.textContent = name;
+    trackerRefTip.appendChild(line);
+  }
+  trackerRefTip.hidden = false;
+  // beside the cursor, kept inside the window
+  const w = trackerRefTip.offsetWidth, h = trackerRefTip.offsetHeight;
+  trackerRefTip.style.left = Math.min(x + 14, window.innerWidth - w - 8) + 'px';
+  trackerRefTip.style.top = (y + 18 + h > window.innerHeight ? y - h - 10 : y + 18) + 'px';
+}
+function caretAt(x, y) {
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(x, y);
+    return p ? { node: p.offsetNode, offset: p.offset } : null;
+  }
+  const r = document.caretRangeFromPoint && document.caretRangeFromPoint(x, y);
+  return r ? { node: r.startContainer, offset: r.startOffset } : null;
+}
+document.addEventListener('mousemove', (e) => {
+  if (!trackerRefsOn || !trackerRefsPainted.length) return;
+  const { clientX: x, clientY: y, target } = e;
+  cancelAnimationFrame(trackerRefTipFrame);
+  trackerRefTipFrame = requestAnimationFrame(() => {
+    if (!target.closest || !target.closest('.chapter-body')) { hideTrackerRefTip(); return; }
+    const caret = caretAt(x, y);
+    if (!caret) { hideTrackerRefTip(); return; }
+    const names = [];
+    for (const { range, names: these } of trackerRefsPainted) {
+      let hit = false;
+      try { hit = range.isPointInRange(caret.node, caret.offset); } catch { hit = false; }
+      // the caret can sit just past the last character; count the passage's own end as outside
+      if (hit && !(caret.node === range.endContainer && caret.offset === range.endOffset)) {
+        for (const n of these) if (!names.includes(n)) names.push(n);
+      }
+    }
+    if (names.length) showTrackerRefTip(names, x, y);
+    else hideTrackerRefTip();
+  });
+});
+document.addEventListener('scroll', hideTrackerRefTip, true);
+document.addEventListener('keydown', hideTrackerRefTip, true);
+
+/* ================================================================== */
 /*  The hooks app.js calls                                              */
 /* ================================================================== */
 
@@ -832,6 +994,7 @@ window.neoHooks = {
   tabShown: (name) => {
     const onManuscript = name === 'manuscript';
     $('#side-pane-toggle').hidden = !onManuscript;
+    $('#tracker-refs-toggle').hidden = !onManuscript;
     const pane = $('#side-pane');
     if (!onManuscript && !$('#editor-view').classList.contains('darlings-tab') && pane.dataset.pinned !== '1') pane.classList.remove('open');
   },
@@ -840,5 +1003,5 @@ window.neoHooks = {
   darlingRendered: (el, content, d) => { el.dataset.did = d.id; content.classList.add('darling-text'); },
   // updateCounters(): the word counts were refreshed — both notifiers
   // debounce themselves, so this is cheap to call every time
-  countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); },
+  countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); schedulePaintTrackerRefs(); },
 };
