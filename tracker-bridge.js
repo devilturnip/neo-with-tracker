@@ -824,7 +824,7 @@ window.addEventListener('blur', () => closePalette(false));
 // obvious before Ctrl+D. The highlight can't carry a tooltip of its own,
 // so the painted ranges are kept here and hit-tested against the cursor.
 let trackerRefsOn = false;
-let trackerRefsPainted = []; // [{ range, names: [...] }]
+let trackerRefsPainted = []; // [{ range, entities: [{ kind, id, name, label }] }]
 let trackerRefsVersion = null;
 let trackerRefsKey = '';
 let trackerRefsPaintTimer = null;
@@ -859,9 +859,10 @@ async function paintTrackerRefs(force) {
       const range = quoteRange(body, ref.quote, ref.occurrence, lower);
       if (!range) continue;
       const at = rangeToTextPos(body, range.startContainer, range.startOffset) + ':' + range.toString().length;
-      const entry = byPassage.get(at) || { range, names: [] };
-      const name = ref.name + ' (' + ref.label + ')';
-      if (!entry.names.includes(name)) entry.names.push(name);
+      const entry = byPassage.get(at) || { range, entities: [] };
+      if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
+        entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label });
+      }
       byPassage.set(at, entry);
     }
     painted.push(...byPassage.values());
@@ -914,18 +915,23 @@ let trackerRefTipFrame = 0;
 function hideTrackerRefTip() {
   if (trackerRefTip) trackerRefTip.hidden = true;
 }
-function showTrackerRefTip(names, x, y) {
+const entityLine = (x) => x.name + ' (' + x.label + ')';
+function showTrackerRefTip(entities, x, y) {
   if (!trackerRefTip) {
     trackerRefTip = document.createElement('div');
     trackerRefTip.id = 'tracker-refs-tip';
     document.body.appendChild(trackerRefTip);
   }
   trackerRefTip.textContent = '';
-  for (const name of names) {
+  for (const entity of entities) {
     const line = document.createElement('div');
-    line.textContent = name;
+    line.textContent = entityLine(entity);
     trackerRefTip.appendChild(line);
   }
+  const hint = document.createElement('div');
+  hint.className = 'tr-hint';
+  hint.textContent = t(IS_MAC ? '⌘-click to open' : 'Ctrl+click to open');
+  trackerRefTip.appendChild(hint);
   trackerRefTip.hidden = false;
   // beside the cursor, kept inside the window
   const w = trackerRefTip.offsetWidth, h = trackerRefTip.offsetHeight;
@@ -940,27 +946,59 @@ function caretAt(x, y) {
   const r = document.caretRangeFromPoint && document.caretRangeFromPoint(x, y);
   return r ? { node: r.startContainer, offset: r.startOffset } : null;
 }
+// The entities referencing whatever passage is under a point, deduplicated —
+// shared by the hover label and the Ctrl+click.
+function trackerRefsAt(x, y, target) {
+  if (!trackerRefsOn || !trackerRefsPainted.length) return [];
+  if (!target || !target.closest || !target.closest('.chapter-body')) return [];
+  const caret = caretAt(x, y);
+  if (!caret) return [];
+  const found = [];
+  for (const { range, entities } of trackerRefsPainted) {
+    let hit = false;
+    try { hit = range.isPointInRange(caret.node, caret.offset); } catch { hit = false; }
+    // the caret can sit just past the last character; count the passage's own end as outside
+    if (!hit || (caret.node === range.endContainer && caret.offset === range.endOffset)) continue;
+    for (const entity of entities) {
+      if (!found.some((f) => f.kind === entity.kind && f.id === entity.id)) found.push(entity);
+    }
+  }
+  return found;
+}
+
 document.addEventListener('mousemove', (e) => {
   if (!trackerRefsOn || !trackerRefsPainted.length) return;
   const { clientX: x, clientY: y, target } = e;
   cancelAnimationFrame(trackerRefTipFrame);
   trackerRefTipFrame = requestAnimationFrame(() => {
-    if (!target.closest || !target.closest('.chapter-body')) { hideTrackerRefTip(); return; }
-    const caret = caretAt(x, y);
-    if (!caret) { hideTrackerRefTip(); return; }
-    const names = [];
-    for (const { range, names: these } of trackerRefsPainted) {
-      let hit = false;
-      try { hit = range.isPointInRange(caret.node, caret.offset); } catch { hit = false; }
-      // the caret can sit just past the last character; count the passage's own end as outside
-      if (hit && !(caret.node === range.endContainer && caret.offset === range.endOffset)) {
-        for (const n of these) if (!names.includes(n)) names.push(n);
-      }
-    }
-    if (names.length) showTrackerRefTip(names, x, y);
+    const entities = trackerRefsAt(x, y, target);
+    if (entities.length) showTrackerRefTip(entities, x, y);
     else hideTrackerRefTip();
   });
 });
+
+// Ctrl+click (⌘-click on a Mac, where Ctrl+click is a right-click) on a
+// tinted passage: its entity's property window in the tracker drawer — a
+// menu first when more than one thing references the passage. Caught on
+// mousedown, before NEO moves the caret, so the selection stays put.
+async function openTrackerEntity(entity) {
+  trackerFlowActive = true; // keep the pane open until the cursor gets there
+  await openTrackerPane();
+  if (trackerReadyUrl) await sendTrackerIntent('open', entity.kind + ':' + entity.id);
+}
+document.addEventListener('mousedown', async (e) => {
+  if (e.button !== 0 || !(IS_MAC ? e.metaKey : e.ctrlKey) || e.altKey || e.shiftKey) return;
+  const entities = trackerRefsAt(e.clientX, e.clientY, e.target);
+  if (!entities.length) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideTrackerRefTip();
+  if (entities.length === 1) { openTrackerEntity(entities[0]); return; }
+  const choice = await popMenu(e.clientX, e.clientY,
+    entities.map((x, i) => ({ label: entityLine(x), value: String(i) })),
+    { title: t('Open in the tracker') });
+  if (choice !== null && choice !== undefined && entities[Number(choice)]) openTrackerEntity(entities[Number(choice)]);
+}, true);
 document.addEventListener('scroll', hideTrackerRefTip, true);
 document.addEventListener('keydown', hideTrackerRefTip, true);
 

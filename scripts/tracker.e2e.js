@@ -243,7 +243,8 @@ test('Refs tints referenced passages, names them on hover, and Alt+D turns it of
     body.dispatchEvent(new MouseEvent('mousemove', { clientX: b.left + b.width / 2, clientY: b.top + b.height / 2, bubbles: true }));
   })()`);
   await tick(100);
-  assert.equal(await js(`(() => { const t = document.getElementById('tracker-refs-tip'); return t && !t.hidden ? t.textContent : null; })()`), 'Hello Sword (item)');
+  assert.equal(await js(`(() => { const t = document.getElementById('tracker-refs-tip'); return t && !t.hidden ? t.firstChild.textContent : null; })()`), 'Hello Sword (item)');
+  assert.equal(await js(`document.querySelector('#tracker-refs-tip .tr-hint')?.textContent`), 'Ctrl+click to open');
   // and somewhere that isn't referenced
   await js(`document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('mousemove', { clientX: 2, clientY: 2, bubbles: true }))`);
   await tick(100);
@@ -254,6 +255,65 @@ test('Refs tints referenced passages, names them on hover, and Alt+D turns it of
   assert.equal(await js(`CSS.highlights.has('neo-tracker-refs')`), false, 'Alt+D turned it off');
   assert.equal(await js(`localStorage.getItem('neo-tracker-refs')`), '0');
   await js(`window.fetch = window.__realFetch3; trackerReadyUrl = window.__prevUrl3; 0`);
+});
+
+// Ctrl+click a tinted passage: one entity opens straight away, several ask
+// first. The intent post is recorded instead of made.
+const helloPoint = () => js(`(() => {
+  const body = document.querySelector('.chapter-body');
+  body.scrollIntoView({ block: 'center' });
+  const node = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode();
+  const r = document.createRange(); r.setStart(node, 1); r.setEnd(node, 3);
+  const b = r.getBoundingClientRect();
+  return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+})()`);
+const stubRefs = (refs) => js(`
+  window.__prevUrl4 = window.__prevUrl4 ?? trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+  window.__realFetch4 = window.__realFetch4 ?? window.fetch;
+  window.__intents = [];
+  window.fetch = (u) => {
+    const url = String(u);
+    if (url.includes('__references')) return Promise.resolve({ ok: true, json: async () => ({ version: Math.random(), byChapter: { 1: ${JSON.stringify(refs)} } }) });
+    if (url.includes('__neo-intent')) window.__intents.push(decodeURIComponent(url.split('?')[1]));
+    return Promise.resolve({ ok: true, json: async () => ({ version: 1 }) });
+  }; 0`);
+const ctrlClickHello = async () => {
+  const p = await helloPoint();
+  await tick(50);
+  return js(`document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('mousedown', { clientX: ${p.x}, clientY: ${p.y}, ctrlKey: true, button: 0, bubbles: true, cancelable: true })) ? 'not prevented' : 'prevented'`);
+};
+
+test('Ctrl+click a tinted passage opens its entity in the drawer', async () => {
+  await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await stubRefs([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]);
+  await js(`setTrackerRefs(true); 0`);
+  await tick(300);
+  assert.equal(await ctrlClickHello(), 'prevented', 'the click was claimed, so the caret stays put');
+  await tick(300);
+  assert.deepEqual(await js(`window.__intents`), ['type=open&text=item:hello']);
+  const state = await paneState();
+  assert.equal(state.open, true);
+  assert.equal(state.mode, 'tracker');
+  // a plain click on the same passage is left alone
+  const p = await helloPoint();
+  assert.equal(await js(`document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('mousedown', { clientX: ${p.x}, clientY: ${p.y}, button: 0, bubbles: true, cancelable: true })) ? 'not prevented' : 'prevented'`), 'not prevented');
+});
+
+test('Ctrl+click a passage several entities reference asks which one', async () => {
+  await stubRefs([
+    { kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' },
+    { kind: 'character', id: 'greeter', name: 'Greeter', label: 'character', quote: 'Hello' },
+  ]);
+  await js(`paintTrackerRefs(true); 0`);
+  await tick(300);
+  await ctrlClickHello();
+  await tick(200);
+  const items = await js(`[...document.querySelectorAll('.pop-menu button')].map((b) => b.textContent)`);
+  assert.deepEqual(items, ['Hello Sword (item)', 'Greeter (character)']);
+  await js(`[...document.querySelectorAll('.pop-menu button')][1].click()`);
+  await tick(300);
+  assert.deepEqual(await js(`window.__intents`), ['type=open&text=character:greeter']);
+  await js(`setTrackerRefs(false); window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
 
 // The Ctrl+D palette, against a stand-in tracker server: a canned search
