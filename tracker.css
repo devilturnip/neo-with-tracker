@@ -119,9 +119,11 @@ body.light #tracker-palette li.active, body.light #tracker-palette li:not(.tp-no
 #side-pane-toggle.active { color: var(--accent); }
 /* the enlarged bottom bar in a small window (styles.css, .ui-zoomed): the
    button wraps and sheds like the tabs beside it */
-.ui-zoomed #side-pane-toggle { white-space: nowrap; }
+.ui-zoomed #side-pane-toggle,
+.ui-zoomed #tracker-refs-toggle { white-space: nowrap; }
 @container (max-width: 700px) {
-  .ui-zoomed #side-pane-toggle { display: none; }
+  .ui-zoomed #side-pane-toggle,
+  .ui-zoomed #tracker-refs-toggle { display: none; }
 }
 body.light #side-pane-toggle:hover { color: #1c1a17; }
 body.light #side-pane-toggle.active { color: var(--accent); }

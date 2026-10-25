@@ -316,6 +316,43 @@ test('Ctrl+click a passage several entities reference asks which one', async () 
   await js(`setTrackerRefs(false); window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
 
+// Both the outside-click closer and the Ctrl+click opener are capture
+// listeners on document, the closer registered first — so without the
+// closer stepping aside, a Ctrl+click with the drawer open closed it and
+// the opener reopened it a moment later.
+test('Ctrl+click a tinted passage while the drawer is already open keeps it open, without a close-and-reopen', async () => {
+  await stubRefs([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]);
+  await js(`setTrackerRefs(true); 0`);
+  await hover('side-hotzone', true);
+  await tick(300);
+  assert.equal((await paneState()).open, true);
+  // count closes at the source: closeSidePane is the one way the pane shuts
+  await js(`window.__closes = 0; window.__realClose = closeSidePane; closeSidePane = () => { window.__closes++; window.__realClose(); }; 0`);
+  await ctrlClickHello();
+  await tick(300);
+  assert.equal(await js(`window.__closes`), 0, 'the outside-click closer left the Ctrl+click alone');
+  assert.equal((await paneState()).open, true);
+  assert.deepEqual(await js(`window.__intents`), ['type=open&text=item:hello']);
+  await js(`closeSidePane = window.__realClose; setTrackerRefs(false); 0`);
+});
+
+test('a click that closes the pane also releases the flow hold', async () => {
+  assert.equal((await paneState()).open, true, 'still open from the Ctrl+click above');
+  await js(`trackerFlowActive = true; 0`);
+  await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await tick(100);
+  assert.equal((await paneState()).open, false);
+  assert.equal(await js(`trackerFlowActive`), false, 'closing released the hold');
+  await hover('side-hotzone', true);
+  await tick(300);
+  await moveTo('inside');
+  await tick(20);
+  await moveTo('outside');
+  await tick(50);
+  assert.equal((await paneState()).open, false, 'so the next open auto-closes on a normal exit again');
+  await js(`window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
+});
+
 // The Ctrl+D palette, against a stand-in tracker server: a canned search
 // hit, and a recorded quick-reference post. Nothing here needs the real
 // tracker; trackerReadyUrl is pointed at the stub for these two cases.

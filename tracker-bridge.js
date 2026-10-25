@@ -89,6 +89,10 @@ function openSidePane() {
 }
 function closeSidePane() {
   $('#side-pane').classList.remove('open');
+  // whatever flow was holding the pane open is over once it's closed — a
+  // hold left set here would make the next open ignore the cursor leaving
+  // until it had visited the pane once
+  trackerFlowActive = false;
 }
 $('#side-pane-toggle').onclick = () => {
   const pane = $('#side-pane');
@@ -112,6 +116,12 @@ document.addEventListener('mousedown', (e) => {
   // reads as "clicked outside the pane" here and would otherwise close it
   // out from under the flow this click is part of.
   if (e.target.closest('.pop-menu')) return;
+  // a Ctrl+click (⌘ on a Mac) on a tinted passage belongs to the ref opener
+  // further down, which keeps the pane — both listeners are capture-phase on
+  // document and this one runs first, so closing here would only flicker
+  // the pane shut and open again
+  if (e.button === 0 && (IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey &&
+      trackerRefsAt(e.clientX, e.clientY, e.target).length) return;
   closeSidePane();
 }, true);
 
@@ -218,7 +228,7 @@ document.addEventListener('mousemove', (e) => {
     if (inside) trackerFlowActive = false; // genuinely engaging with it now — resume normal tracking
     return; // never auto-close mid-flow (or just after) purely from cursor position
   }
-  if (!inside) pane.classList.remove('open');
+  if (!inside) closeSidePane();
 });
 
 /* ================================================================== */
@@ -657,7 +667,7 @@ document.addEventListener('contextmenu', async (e) => {
 });
 
 /* ================================================================== */
-/*  Ctrl+K: attach a reference without leaving the manuscript          */
+/*  Ctrl+D: attach a reference without leaving the manuscript          */
 /* ================================================================== */
 
 // Select a passage, Ctrl+D, type part of a name, Enter: the selection is
@@ -1034,7 +1044,7 @@ window.neoHooks = {
     $('#side-pane-toggle').hidden = !onManuscript;
     $('#tracker-refs-toggle').hidden = !onManuscript;
     const pane = $('#side-pane');
-    if (!onManuscript && !$('#editor-view').classList.contains('darlings-tab') && pane.dataset.pinned !== '1') pane.classList.remove('open');
+    if (!onManuscript && !$('#editor-view').classList.contains('darlings-tab') && pane.dataset.pinned !== '1') closeSidePane();
   },
   // renderDarlings(): one darling's element was just built — tag it so the
   // right-click handler above can look the darling back up
