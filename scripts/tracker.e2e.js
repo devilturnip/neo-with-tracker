@@ -448,6 +448,38 @@ test('Escape closes the palette without posting, selection intact', async () => 
   await js(`window.fetch = window.__realFetch; trackerReadyUrl = window.__prevUrl; 0`);
 });
 
+// A stat block copied from the tracker (its HTML carries the
+// data-luckmode-block mark) pastes as poetry paragraphs, one per line, with
+// no dialogue-dash rewriting; an unmarked paste is NEO's own, as before.
+const pasteAtEnd = (html, text) => js(`(() => {
+  const body = document.querySelector('.chapter-body');
+  const p = body.querySelector('p');
+  const r = document.createRange(); r.selectNodeContents(p); r.collapse(false);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  const dt = new DataTransfer();
+  dt.setData('text/html', ${JSON.stringify(html)});
+  dt.setData('text/plain', ${JSON.stringify(text)});
+  (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement)
+    .dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  return [...body.querySelectorAll('p')].map((x) => [x.className, x.textContent, !!x.querySelector('i')]);
+})()`);
+
+test('a stat block copied from the tracker pastes as poetry lines; any other paste stays prose', async () => {
+  const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
+  try {
+    const marked = await pasteAtEnd(
+      '<div data-luckmode-block="1"><p>LV 1</p><p>- LCK 99</p></div>', 'LV 1\n\n- LCK 99\n');
+    assert.deepEqual(marked.slice(1), [['poetry', 'LV 1', true], ['poetry', '- LCK 99', true]],
+      'one italic poetry paragraph per line, blank lines dropped, the hyphen left alone');
+    assert.equal(marked[0][1], 'Hello.', 'the paragraph it was pasted after is untouched');
+    await js(`(() => { const b = document.querySelector('.chapter-body'); b.innerHTML = ${JSON.stringify('<p>Hello.</p>')}; return 0; })()`);
+    const plain = await pasteAtEnd('<p>plain words</p>', 'plain words');
+    assert.equal(plain.some(([cls]) => cls.includes('poetry')), false, 'an unmarked paste is not poetry');
+  } finally {
+    await js(`(() => { const b = document.querySelector('.chapter-body'); b.innerHTML = ${JSON.stringify(saved)}; syncChapter(b, b.closest('.chapter').dataset.id); return 0; })()`);
+  }
+});
+
 async function main() {
   await app.whenReady();
   let failed = 0;

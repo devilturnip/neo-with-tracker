@@ -642,6 +642,77 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ================================================================== */
+/*  Paste: a stat block copied from the tracker lands as poetry         */
+/* ================================================================== */
+
+// The tracker's status-panel copy buttons (CopyButton.tsx) mark what they
+// copy with a data-luckmode-block wrapper on the clipboard's HTML. Pasted
+// into the manuscript, each line becomes a poetry paragraph — NEO's own
+// set-apart paragraph, which Word, EPUB and PDF already keep distinct —
+// rather than prose (and no dialogue-dash or Markdown rewriting of
+// "HP - 15" style lines). Every other paste is left to NEO. Capture phase
+// on document, so this runs before the chapter body's own paste handler.
+const TRACKER_BLOCK_MARK = 'data-luckmode-block';
+document.addEventListener('paste', (e) => {
+  const body = e.target && e.target.closest ? e.target.closest('.chapter-body') : null;
+  if (!body || isScript()) return;
+  const data = e.clipboardData;
+  if (!data || !(data.getData('text/html') || '').includes(TRACKER_BLOCK_MARK)) return;
+  const lines = (data.getData('text/plain') || '').replace(/\r/g, '').split('\n')
+    .map((l) => l.trimEnd()).filter((l) => l.trim());
+  if (!lines.length) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  pasteStatBlock(body, lines);
+}, true);
+
+function pasteStatBlock(body, lines) {
+  const chId = body.closest('.chapter').dataset.id;
+  snapshotStructure('stat block paste'); // one ⌘Z takes the whole block back out
+  const sel = window.getSelection();
+  if (sel.rangeCount && !sel.isCollapsed) document.execCommand('delete'); // over a selection: replaces it
+  const ps = lines.map((line) => {
+    const p = document.createElement('p');
+    p.className = 'poetry';
+    p.textContent = line;
+    italicize(p); // poetry is born italic, as NEO makes it
+    return p;
+  });
+  const block = caretBlock(body);
+  if (!block) body.append(...ps);
+  else if (block.classList.contains('ghost') || block.textContent.trim() === '') block.replaceWith(...ps);
+  else if (block.classList.contains('scene-break')) block.after(...ps);
+  else {
+    // where the caret is in its paragraph: at the start, the end, or mid-way (split it)
+    const r = sel.getRangeAt(0);
+    const head = document.createRange();
+    head.selectNodeContents(block);
+    head.setEnd(r.startContainer, r.startOffset);
+    const at = head.toString().length;
+    if (at === 0) block.before(...ps);
+    else if (at >= block.textContent.length) block.after(...ps);
+    else {
+      const tail = document.createRange();
+      tail.selectNodeContents(block);
+      tail.setStart(r.startContainer, r.startOffset);
+      const rest = document.createElement('p');
+      rest.className = block.className;
+      rest.appendChild(tail.extractContents());
+      block.after(...ps, rest);
+    }
+  }
+  // caret after the block's last line, ready to carry on writing
+  const end = document.createRange();
+  end.selectNodeContents(ps[ps.length - 1]);
+  end.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(end);
+  syncChapter(body, chId);
+  resetNativeUndo();
+  breakRun++;
+}
+
+/* ================================================================== */
 /*  Ctrl+D: attach a reference without leaving the manuscript          */
 /* ================================================================== */
 
