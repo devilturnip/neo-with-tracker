@@ -353,6 +353,44 @@ test('a click that closes the pane also releases the flow hold', async () => {
   await js(`window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
 
+// Right-click / Alt+A: one step to the tracker's New entry dialog — a
+// single "new" intent carrying the selection, no kind or owner menus.
+const selectHello = () => js(`(() => {
+  const body = document.querySelector('.chapter-body');
+  const node = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode();
+  const range = document.createRange(); range.setStart(node, 0); range.setEnd(node, 5);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); return sel.toString();
+})()`);
+
+test('right-clicking a selection opens the drawer and asks for a New entry — no menu', async () => {
+  await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await stubRefs([]);
+  assert.equal(await selectHello(), 'Hello');
+  const p = await helloPoint();
+  const claimed = await js(`!document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('contextmenu', { clientX: ${p.x}, clientY: ${p.y}, button: 2, bubbles: true, cancelable: true }))`);
+  assert.equal(claimed, true, 'the bridge claimed the right-click');
+  await tick(300);
+  assert.equal(await js(`!!document.querySelector('.pop-menu')`), false, 'no kind or owner menu');
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello']);
+  const state = await paneState();
+  assert.equal(state.open, true);
+  assert.equal(state.mode, 'tracker');
+});
+
+test('Alt+A asks for a New entry from the keyboard: the selection as its name, or nothing', async () => {
+  await js(`window.__intents = []; 0`);
+  assert.equal(await selectHello(), 'Hello');
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', altKey: true, bubbles: true, cancelable: true }))`);
+  await tick(300);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello']);
+  await js(`window.__intents = []; getSelection().removeAllRanges(); 0`);
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', altKey: true, bubbles: true, cancelable: true }))`);
+  await tick(300);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text='], 'an empty dialog with nothing selected');
+  await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await js(`window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
+});
+
 // The Ctrl+D palette, against a stand-in tracker server: a canned search
 // hit, and a recorded quick-reference post. Nothing here needs the real
 // tracker; trackerReadyUrl is pointed at the stub for these two cases.

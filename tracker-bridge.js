@@ -110,11 +110,11 @@ document.addEventListener('mousedown', (e) => {
   // manuscript — to select a passage for it, say — mustn't take it away
   if (trackerEditing && pane.dataset.mode === 'tracker') return;
   if (pane.contains(e.target) || e.target.closest('#side-pane-toggle')) return;
-  // a pop-menu (e.g. the right-click "Add to the tracker" action/character
-  // pickers) renders at document.body, not inside #side-pane, at whatever
-  // position the triggering click happened — so picking an item in one
-  // reads as "clicked outside the pane" here and would otherwise close it
-  // out from under the flow this click is part of.
+  // a pop-menu (the Ctrl+click "Open in the tracker" picker) renders at
+  // document.body, not inside #side-pane, at whatever position the
+  // triggering click happened — so picking an item in one reads as
+  // "clicked outside the pane" here and would otherwise close it out from
+  // under the flow this click is part of.
   if (e.target.closest('.pop-menu')) return;
   // a Ctrl+click (⌘ on a Mac) on a tinted passage belongs to the ref opener
   // further down, which keeps the pane — both listeners are capture-phase on
@@ -130,18 +130,18 @@ document.addEventListener('mousedown', (e) => {
 // hotzone has already added .open by the time this runs; both happen inside
 // one event dispatch, so the pane never paints in the wrong mode.
 let trackerPaneOpenedAt = 0;
-// Set for the duration of the right-click "Add to the tracker" flow (further
-// down) — while true, the mousemove listener below never closes the pane,
-// since that flow's own pop-menus render at the click position (usually out
-// in the manuscript, not over the pane) and the cursor never has to be over
-// the pane just to pick a character. Cleared the moment the cursor is
-// actually seen inside the pane (the user looking at the dialog that just
-// opened), which hands auto-close back to normal; a deliberate click
-// elsewhere still closes it regardless (see the mousedown listener above).
+// Set while a gesture out in the manuscript (a right-click or Alt+A for a
+// New entry, a Ctrl+click on a tinted passage, a new chapter) is bringing
+// the pane up — while true, the mousemove listener below never closes the
+// pane, since the cursor is wherever that gesture happened, not over the
+// pane. Cleared the moment the cursor is actually seen inside the pane
+// (the user looking at the dialog that just opened), which hands auto-
+// close back to normal; a deliberate click elsewhere still closes it
+// regardless (see the mousedown listener above, and closeSidePane).
 let trackerFlowActive = false;
-// Shared by the hover gesture and the right-click "Add to the tracker" menu
-// (further down) — either one puts the pane in tracker mode and gets the
-// dev server starting, without waiting on it.
+// Shared by the hover gesture and the New entry gesture (further down) —
+// either one puts the pane in tracker mode and gets the dev server
+// starting, without waiting on it.
 function openTrackerPane() {
   const pane = $('#side-pane');
   pane.dataset.mode = 'tracker';
@@ -402,13 +402,12 @@ function notifyTrackerOfSelection() {
 }
 document.addEventListener('selectionchange', notifyTrackerOfSelection);
 
-// Posts a one-shot "create this" request for the tracker's own polling to
-// pick up (see notifyTrackerOfChapter above for why this goes through the
+// Posts a one-shot request ("new": open the New entry dialog on this text;
+// "open": show this entity) for the tracker's own polling to pick up (see notifyTrackerOfChapter above for why this goes through the
 // dev server rather than the iframe directly — the same reasoning applies
 // here, and no-cors/query-string is the same shape for the same reason).
-async function sendTrackerIntent(type, text, owner) {
-  const url = trackerReadyUrl + '__neo-intent?type=' + encodeURIComponent(type)
-    + '&text=' + encodeURIComponent(text) + (owner ? '&owner=' + encodeURIComponent(owner) : '');
+async function sendTrackerIntent(type, text) {
+  const url = trackerReadyUrl + '__neo-intent?type=' + encodeURIComponent(type) + '&text=' + encodeURIComponent(text);
   await fetch(url, { method: 'POST', mode: 'no-cors' }).catch(() => {});
 }
 
@@ -426,8 +425,8 @@ function notifyTrackerOfNewChapter(chId) {
     // it — almost never over the pane itself — so the mousemove auto-close
     // listener (see its comment above) would otherwise close it again the
     // instant it next fires, often before the dialog has even loaded.
-    // trackerFlowActive holds it open the same way the right-click "Add to
-    // the tracker" flow does, until the cursor genuinely moves over it.
+    // trackerFlowActive holds it open the same way the right-click New
+    // entry gesture does, until the cursor genuinely moves over it.
     trackerFlowActive = true;
     await openTrackerPane();
     if (!trackerReadyUrl) { trackerFlowActive = false; return; } // tracker not available — nothing to do
@@ -591,79 +590,50 @@ function jumpToTrackerGoto(n, quote, occurrence) {
 }
 
 /* ================================================================== */
-/*  Right-click: "Add to the tracker"                                   */
+/*  Right-click / Alt+A: a new entry in the tracker                      */
 /* ================================================================== */
 
-// Right-click a text selection in the manuscript → create a character,
-// item, relic, skill, quest, or familiar in the tracker, prefilled with
-// whatever was selected. This file loads after app.js, so this runs after
-// the spellcheck-suggestions and macOS Look Up handlers (both already
+// Right-click a text selection in the manuscript → the tracker's New entry
+// dialog, prefilled with whatever was selected. One step: what kind of
+// thing it is and whose it is are choices inside the dialog (a strip of
+// kind buttons, an Owner select preset to the chapter's POV), not menus
+// on the way in. This file loads after app.js, so this runs after the
+// spellcheck-suggestions and macOS Look Up handlers (both already
 // check/set e.defaultPrevented the same way) — it only acts when neither
 // of those claimed the click.
-document.addEventListener('contextmenu', async (e) => {
-  if (e.defaultPrevented) return;
-  const editor = e.target.closest && e.target.closest('.chapter-body');
-  // Cut text in Darlings has no live .chapter-body/.chapter — the darling
-  // object itself (darlings array) remembers which chapter it came from.
-  const darlingText = !editor && e.target.closest && e.target.closest('#darlings-list .darling-text');
-  if (!editor && !darlingText) return;
+function selectedManuscriptText(target) {
+  const editor = target.closest && target.closest('.chapter-body');
+  // Cut text in Darlings has no live .chapter-body — it's still manuscript
+  const darlingText = !editor && target.closest && target.closest('#darlings-list .darling-text');
+  if (!editor && !darlingText) return null;
   const sel = window.getSelection();
-  const text = sel && sel.rangeCount && !sel.isCollapsed ? sel.toString().trim() : '';
-  if (!text) return;
-  e.preventDefault();
-  const x = e.clientX, y = e.clientY;
-  const title = text.length > 28 ? text.slice(0, 28) + '…' : text;
-  const action = await popMenu(x, y, [
-    { label: t('Add character…'), value: 'character' },
-    { label: t('Add item…'), value: 'item' },
-    { label: t('Add relic…'), value: 'relic' },
-    { label: t('Add ability…'), value: 'skill' },
-    { label: t('Add quest…'), value: 'quest' },
-    { label: t('Add familiar…'), value: 'familiar' },
-    { label: t('Add mount…'), value: 'mount' },
-    { label: t('Add location…'), value: 'location' },
-  ], { title });
-  if (!action) return;
-  trackerFlowActive = true; // see its declaration above — keeps the pane open through the rest of this flow
+  return sel && sel.rangeCount && !sel.isCollapsed ? sel.toString().trim() : '';
+}
+async function openNewEntry(text) {
+  trackerFlowActive = true; // see its declaration above — keeps the pane open while the dialog comes up
   await openTrackerPane();
   if (!trackerReadyUrl) { toast(t("The tracker isn't available right now.")); trackerFlowActive = false; return; }
-  if (action === 'character') { await sendTrackerIntent('character', text); return; }
-  // a location belongs to the chapter on screen, not to anyone in it —
-  // same early return as 'character' above, skipping the "which
-  // character?" picker below entirely.
-  if (action === 'location') { await sendTrackerIntent('location', text); return; }
-  // everything else is attached to a specific character — ask which one.
-  // Scoped to the chapter being right-clicked in, via its charactersPresent
-  // (tag the chapter's cast first — the Cast disclosure, or the status
-  // screen's "In this chapter" checkbox — if this should offer anyone);
-  // POV character first, else Jake, else whatever order the tracker
-  // already returned them in.
-  let chId;
-  if (editor) {
-    chId = editor.closest('.chapter')?.dataset.id;
-  } else {
-    const did = darlingText.closest('.darling')?.dataset.did;
-    const d = darlings.find((x) => x.id === did);
-    // the chapter it was cut from may since have been deleted — falls back
-    // to the full cast below, same as an untagged chapter would
-    chId = d && book.chapterOrder.includes(d.chapterId) ? d.chapterId : null;
-  }
-  const n = chId ? chapterNumber(chId) : null;
-  let characters = [], povCharacter = null;
-  try {
-    const result = await (await fetch(trackerReadyUrl + '__neo-characters' + (n ? '?chapter=' + n : ''))).json();
-    characters = result.characters || [];
-    povCharacter = result.povCharacter || null;
-  } catch { /* stays empty */ }
-  characters.sort((a, b) =>
-    (a.id === povCharacter ? -1 : b.id === povCharacter ? 1 : 0)
-    || (a.id === 'jake' ? -1 : b.id === 'jake' ? 1 : 0));
-  const items = characters.length
-    ? characters.map((c) => ({ label: c.name, value: c.id }))
-    : [{ label: t('No characters available'), value: null, disabled: true }];
-  const owner = await popMenu(x, y, items, { title: t('For which character?') });
-  if (!owner) { trackerFlowActive = false; return; }
-  await sendTrackerIntent(action, text, owner);
+  await sendTrackerIntent('new', text);
+}
+document.addEventListener('contextmenu', (e) => {
+  if (e.defaultPrevented) return;
+  const text = selectedManuscriptText(e.target);
+  if (!text) return;
+  e.preventDefault();
+  openNewEntry(text);
+});
+// Alt+A (⌥A): the same dialog from the keyboard, with the manuscript
+// selection as the name — or empty, with nothing selected. Free in
+// upstream NEO, and a left-hand reach beside Ctrl+D (tag) and Alt+D (Refs).
+document.addEventListener('keydown', (e) => {
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.code !== 'KeyA') return;
+  if ($('#tracker-refs-toggle').hidden) return; // not on the Manuscript tab
+  e.preventDefault();
+  const sel = window.getSelection();
+  const anchor = sel && sel.rangeCount ? sel.anchorNode : null;
+  const el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+  const text = el && el.closest('.chapter-body, #darlings-list .darling-text') ? selectedManuscriptText(el) : '';
+  openNewEntry(text || '');
 });
 
 /* ================================================================== */
@@ -1046,8 +1016,8 @@ window.neoHooks = {
     const pane = $('#side-pane');
     if (!onManuscript && !$('#editor-view').classList.contains('darlings-tab') && pane.dataset.pinned !== '1') closeSidePane();
   },
-  // renderDarlings(): one darling's element was just built — tag it so the
-  // right-click handler above can look the darling back up
+  // renderDarlings(): one darling's element was just built — mark its text
+  // so a right-click in it counts as manuscript for the New entry gesture
   darlingRendered: (el, content, d) => { el.dataset.did = d.id; content.classList.add('darling-text'); },
   // updateCounters(): the word counts were refreshed — both notifiers
   // debounce themselves, so this is cheap to call every time
