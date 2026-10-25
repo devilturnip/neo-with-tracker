@@ -130,7 +130,7 @@ document.addEventListener('mousedown', (e) => {
 // hotzone has already added .open by the time this runs; both happen inside
 // one event dispatch, so the pane never paints in the wrong mode.
 let trackerPaneOpenedAt = 0;
-// Set while a gesture out in the manuscript (a right-click or Alt+A for a
+// Set while a gesture out in the manuscript (a right-click or Ctrl+Shift+A for a
 // New entry, a Ctrl+click on a tinted passage, a new chapter) is bringing
 // the pane up — while true, the mousemove listener below never closes the
 // pane, since the cursor is wherever that gesture happened, not over the
@@ -590,7 +590,7 @@ function jumpToTrackerGoto(n, quote, occurrence) {
 }
 
 /* ================================================================== */
-/*  Right-click / Alt+A: a new entry in the tracker                      */
+/*  Right-click / Ctrl+Shift+A: a new entry in the tracker               */
 /* ================================================================== */
 
 // Right-click a text selection in the manuscript → the tracker's New entry
@@ -622,11 +622,12 @@ document.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   openNewEntry(text);
 });
-// Alt+A (⌥A): the same dialog from the keyboard, with the manuscript
-// selection as the name — or empty, with nothing selected. Free in
-// upstream NEO, and a left-hand reach beside Ctrl+D (tag) and Alt+D (Refs).
+// Ctrl+Shift+A (⇧⌘A): the same dialog from the keyboard, with the
+// manuscript selection as the name — or empty, with nothing selected.
+// Free in upstream NEO (Ctrl+Shift+D is its Darlings cut), and a left-hand
+// reach beside Ctrl+D (tag) and Alt+D (Refs).
 document.addEventListener('keydown', (e) => {
-  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.code !== 'KeyA') return;
+  if (!(IS_MAC ? e.metaKey : e.ctrlKey) || !e.shiftKey || e.altKey || e.code !== 'KeyA') return;
   if ($('#tracker-refs-toggle').hidden) return; // not on the Manuscript tab
   e.preventDefault();
   const sel = window.getSelection();
