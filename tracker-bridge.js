@@ -633,8 +633,9 @@ document.addEventListener('keydown', (e) => {
   const sel = window.getSelection();
   const anchor = sel && sel.rangeCount ? sel.anchorNode : null;
   const el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
-  const text = el && el.closest('.chapter-body, #darlings-list .darling-text') ? selectedManuscriptText(el) : '';
-  openNewEntry(text || '');
+  // null (selection outside the manuscript) and '' (none at all) both mean
+  // an empty dialog
+  openNewEntry((el && selectedManuscriptText(el)) || '');
 });
 
 /* ================================================================== */
