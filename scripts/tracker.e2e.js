@@ -353,8 +353,9 @@ test('a click that closes the pane also releases the flow hold', async () => {
   await js(`window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
 
-// Right-click / Ctrl+Shift+A: one step to the tracker's New entry dialog — a
-// single "new" intent carrying the selection, no kind or owner menus.
+// Right-click / Ctrl+Shift+A: a single "new" intent carrying the selection,
+// no menus here — the tracker's own chooser asks for kind and owner — and
+// the keyboard handed to the drawer so that chooser's number keys work.
 const selectHello = () => js(`(() => {
   const body = document.querySelector('.chapter-body');
   const node = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode();
@@ -378,11 +379,15 @@ test('right-clicking a selection opens the drawer and asks for a New entry — n
 });
 
 test('Ctrl+Shift+A asks for a New entry from the keyboard: the selection as its name, or nothing', async () => {
-  await js(`window.__intents = []; 0`);
+  // a stand-in drawer frame when the real one was never built (no tracker
+  // server in this run), so the focus hand-off has something to land on
+  await js(`window.__stubFrame = !trackerFrame; if (window.__stubFrame) { trackerFrame = document.createElement('iframe'); document.body.appendChild(trackerFrame); } window.__intents = []; 0`);
   assert.equal(await selectHello(), 'Hello');
   await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
   await tick(300);
   assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello']);
+  assert.equal(await js(`document.activeElement === trackerFrame`), true, 'the keyboard is in the drawer');
+  await js(`if (window.__stubFrame) { trackerFrame.remove(); trackerFrame = null; } delete window.__stubFrame; 0`);
   await js(`window.__intents = []; getSelection().removeAllRanges(); 0`);
   await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
   await tick(300);

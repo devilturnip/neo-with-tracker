@@ -594,10 +594,10 @@ function jumpToTrackerGoto(n, quote, occurrence) {
 /* ================================================================== */
 
 // Right-click a text selection in the manuscript → the tracker's New entry
-// dialog, prefilled with whatever was selected. One step: what kind of
-// thing it is and whose it is are choices inside the dialog (a strip of
-// kind buttons, an Owner select preset to the chapter's POV), not menus
-// on the way in. This file loads after app.js, so this runs after the
+// chooser: what kind of thing it is, then whose (nothing preselected, so
+// it can't be clicked through), then the form prefilled with whatever was
+// selected. The chooser lives in the tracker, which has the chapter's
+// cast to hand — no menu or fetch here. This file loads after app.js, so this runs after the
 // spellcheck-suggestions and macOS Look Up handlers (both already
 // check/set e.defaultPrevented the same way) — it only acts when neither
 // of those claimed the click.
@@ -614,6 +614,9 @@ async function openNewEntry(text) {
   await openTrackerPane();
   if (!trackerReadyUrl) { toast(t("The tracker isn't available right now.")); trackerFlowActive = false; return; }
   await sendTrackerIntent('new', text);
+  // keyboard into the drawer, so the chooser's number keys reach it
+  // rather than typing digits into the manuscript
+  if (trackerFrame) trackerFrame.focus();
 }
 document.addEventListener('contextmenu', (e) => {
   if (e.defaultPrevented) return;
