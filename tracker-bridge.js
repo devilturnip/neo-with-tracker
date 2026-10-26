@@ -406,8 +406,9 @@ document.addEventListener('selectionchange', notifyTrackerOfSelection);
 // "open": show this entity) for the tracker's own polling to pick up (see notifyTrackerOfChapter above for why this goes through the
 // dev server rather than the iframe directly — the same reasoning applies
 // here, and no-cors/query-string is the same shape for the same reason).
-async function sendTrackerIntent(type, text) {
-  const url = trackerReadyUrl + '__neo-intent?type=' + encodeURIComponent(type) + '&text=' + encodeURIComponent(text);
+async function sendTrackerIntent(type, text, extra = {}) {
+  let url = trackerReadyUrl + '__neo-intent?type=' + encodeURIComponent(type) + '&text=' + encodeURIComponent(text);
+  for (const [key, value] of Object.entries(extra)) if (value != null) url += '&' + key + '=' + encodeURIComponent(value);
   await fetch(url, { method: 'POST', mode: 'no-cors' }).catch(() => {});
 }
 
@@ -609,11 +610,22 @@ function selectedManuscriptText(target) {
   const sel = window.getSelection();
   return sel && sel.rangeCount && !sel.isCollapsed ? sel.toString().trim() : '';
 }
+// Where the selection sits: its chapter's number, and which occurrence of
+// its text in that chapter (past the first), so the tracker files the new
+// entry's reference at that passage rather than the first match. Read
+// before the pane opens — opening it can move the focus.
+function selectionPlace() {
+  const info = selectionInfo();
+  const chapter = info && info.body.closest('.chapter[data-id]');
+  if (!chapter) return {};
+  return { chapter: chapterNumber(chapter.dataset.id), occurrence: info.occurrence > 1 ? info.occurrence : null };
+}
 async function openNewEntry(text) {
+  const place = text ? selectionPlace() : {};
   trackerFlowActive = true; // see its declaration above — keeps the pane open while the dialog comes up
   await openTrackerPane();
   if (!trackerReadyUrl) { toast(t("The tracker isn't available right now.")); trackerFlowActive = false; return; }
-  await sendTrackerIntent('new', text);
+  await sendTrackerIntent('new', text, place);
   // keyboard into the drawer, so the chooser's number keys reach it
   // rather than typing digits into the manuscript
   if (trackerFrame) trackerFrame.focus();

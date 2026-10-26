@@ -399,7 +399,7 @@ test('right-clicking a selection opens the drawer and asks for a New entry — n
   assert.equal(claimed, true, 'the bridge claimed the right-click');
   await tick(300);
   assert.equal(await js(`!!document.querySelector('.pop-menu')`), false, 'no kind or owner menu');
-  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello']);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello&chapter=1']);
   const state = await paneState();
   assert.equal(state.open, true);
   assert.equal(state.mode, 'tracker');
@@ -412,13 +412,22 @@ test('Ctrl+Shift+A asks for a New entry from the keyboard: the selection as its 
   assert.equal(await selectHello(), 'Hello');
   await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
   await tick(300);
-  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello']);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello&chapter=1']);
   assert.equal(await js(`document.activeElement === trackerFrame`), true, 'the keyboard is in the drawer');
   await js(`if (window.__stubFrame) { trackerFrame.remove(); trackerFrame = null; } delete window.__stubFrame; 0`);
   await js(`window.__intents = []; getSelection().removeAllRanges(); 0`);
   await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
   await tick(300);
   assert.deepEqual(await js(`window.__intents`), ['type=new&text='], 'an empty dialog with nothing selected');
+  // the second "l" of "Hello": the tracker is told which one
+  await js(`(() => {
+    const node = document.createTreeWalker(document.querySelector('.chapter-body'), NodeFilter.SHOW_TEXT).nextNode();
+    const range = document.createRange(); range.setStart(node, 3); range.setEnd(node, 4);
+    getSelection().removeAllRanges(); getSelection().addRange(range); window.__intents = [];
+  })()`);
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
+  await tick(300);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=l&chapter=1&occurrence=2']);
   await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
   await js(`window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
