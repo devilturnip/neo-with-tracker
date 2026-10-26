@@ -257,6 +257,33 @@ test('Refs tints referenced passages, names them on hover, and Alt+D turns it of
   await js(`window.fetch = window.__realFetch3; trackerReadyUrl = window.__prevUrl3; 0`);
 });
 
+test('Refs follow a tracker write on their own, and a typing pause re-reads nothing', async () => {
+  await js(`
+    window.__prevUrl5 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch5 = window.fetch;
+    window.__stub = { version: 1, refs: [], refFetches: 0 };
+    window.fetch = (u) => {
+      const url = String(u);
+      if (url.includes('__references')) { window.__stub.refFetches += 1; return Promise.resolve({ ok: true, json: async () => ({ version: window.__stub.version, byChapter: { 1: window.__stub.refs } }) }); }
+      if (url.includes('__version')) return Promise.resolve({ ok: true, json: async () => ({ version: window.__stub.version }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    };
+    getSelection().removeAllRanges(); 0`);
+  await js(`setTrackerRefs(true); 0`);
+  await tick(300);
+  assert.equal(await js(`CSS.highlights.get('neo-tracker-refs')?.size ?? 0`), 0, 'nothing referenced yet');
+  // the tracker writes: its counter moves and the references change — no manuscript event
+  await js(`window.__stub.version = 2; window.__stub.refs = [{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]; 0`);
+  await tick(1500);
+  assert.equal(await js(`CSS.highlights.get('neo-tracker-refs')?.size ?? 0`), 1, 'tinted without touching the manuscript');
+  const fetches = await js(`window.__stub.refFetches`);
+  await js(`window.neoHooks.countersUpdated(); 0`);
+  await tick(1200);
+  assert.equal(await js(`CSS.highlights.get('neo-tracker-refs')?.size ?? 0`), 1, 'still tinted after a typing pause');
+  assert.equal(await js(`window.__stub.refFetches`), fetches, 'a typing pause re-reads nothing');
+  await js(`setTrackerRefs(false); window.fetch = window.__realFetch5; trackerReadyUrl = window.__prevUrl5; 0`);
+});
+
 // Ctrl+click a tinted passage: one entity opens straight away, several ask
 // first. The intent post is recorded instead of made.
 const helloPoint = () => js(`(() => {

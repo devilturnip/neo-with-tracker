@@ -882,57 +882,124 @@ window.addEventListener('blur', () => closePalette(false));
 let trackerRefsOn = false;
 let trackerRefsPainted = []; // [{ range, entities: [{ kind, id, name, label }] }]
 let trackerRefsVersion = null;
-let trackerRefsKey = '';
+let trackerRefsReply = null; // the last /__references reply
+// Per chapter, the body painted, its references as sent, and what was
+// found: a chapter is only searched again when one of those changed, or
+// it's the one being typed in. The ranges are live and follow edits.
+let trackerRefsChapters = new Map(); // chapter id -> { body, key, entries }
 let trackerRefsPaintTimer = null;
+let trackerRefsPainting = null; // the paint under way, and the one asked for meanwhile
+let trackerRefsQueued = null;
 const TRACKER_REFS = 'neo-tracker-refs';
 
 function clearTrackerRefs() {
   trackerRefsPainted = [];
-  trackerRefsKey = '';
+  trackerRefsChapters = new Map();
+  trackerRefsReply = null;
   if (window.CSS && CSS.highlights) CSS.highlights.delete(TRACKER_REFS);
   hideTrackerRefTip();
 }
 
-async function paintTrackerRefs(force) {
-  if (!trackerRefsOn || !trackerReadyUrl || !(window.Highlight && window.CSS && CSS.highlights)) { clearTrackerRefs(); return; }
-  let reply;
-  try { reply = await (await fetch(trackerReadyUrl + '__references')).json(); } catch { return; }
-  if (!trackerRefsOn || !reply || !reply.byChapter) return;
-  const chapters = [...document.querySelectorAll('.chapter[data-id]')];
-  const key = chapters.map((c) => c.dataset.id).join(',');
-  if (!force && reply.version === trackerRefsVersion && key === trackerRefsKey && trackerRefsPainted.length) return;
-  trackerRefsVersion = reply.version;
-  trackerRefsKey = key;
-  const painted = [];
-  for (const chapter of chapters) {
-    const body = chapter.querySelector('.chapter-body');
-    const refs = reply.byChapter[chapterNumber(chapter.dataset.id)];
-    if (!body || !refs) continue;
-    // references sharing a passage are one entry naming them all
-    const byPassage = new Map();
-    const lower = bodyPlainText(body).toLowerCase();
-    for (const ref of refs) {
-      const range = quoteRange(body, ref.quote, ref.occurrence, lower);
-      if (!range) continue;
-      const at = rangeToTextPos(body, range.startContainer, range.startOffset) + ':' + range.toString().length;
-      const entry = byPassage.get(at) || { range, entities: [] };
-      if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
-        entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label });
-      }
-      byPassage.set(at, entry);
+// Every referenced passage in one chapter body; references sharing a
+// passage are one entry naming them all.
+function findTrackerRefs(body, refs) {
+  const byPassage = new Map();
+  const lower = bodyPlainText(body).toLowerCase();
+  for (const ref of refs) {
+    const range = quoteRange(body, ref.quote, ref.occurrence, lower);
+    if (!range) continue;
+    const at = rangeToTextPos(body, range.startContainer, range.startOffset) + ':' + range.toString().length;
+    const entry = byPassage.get(at) || { range, entities: [] };
+    if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
+      entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label });
     }
-    painted.push(...byPassage.values());
+    byPassage.set(at, entry);
   }
-  trackerRefsPainted = painted;
-  CSS.highlights.set(TRACKER_REFS, new Highlight(...painted.map((p) => p.range)));
+  return [...byPassage.values()];
+}
+
+// The chapter the caret is in — the one whose text can have moved.
+function caretChapterId() {
+  const sel = getSelection();
+  const node = (sel && sel.anchorNode) || document.activeElement;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const chapter = el && el.closest && el.closest('.chapter[data-id]');
+  return chapter ? chapter.dataset.id : null;
+}
+
+// `reason` is 'version' (the tracker wrote: fetch the references again,
+// search the chapters whose references changed) or 'settle' (typing
+// paused: search the chapter with the caret, no fetch). One paint at a
+// time; a request made during one runs after it, a 'version' outranking
+// a 'settle'.
+function paintTrackerRefs(reason) {
+  if (!trackerRefsOn || !trackerReadyUrl || !(window.Highlight && window.CSS && CSS.highlights)) { clearTrackerRefs(); return; }
+  if (trackerRefsPainting) { trackerRefsQueued = reason === 'version' ? 'version' : (trackerRefsQueued || 'settle'); return trackerRefsPainting; }
+  trackerRefsPainting = (async () => {
+    if (reason === 'version' || !trackerRefsReply) {
+      let reply;
+      try { reply = await (await fetch(trackerReadyUrl + '__references')).json(); } catch { return; }
+      if (!trackerRefsOn || !reply || !reply.byChapter) return;
+      trackerRefsReply = reply;
+      trackerRefsVersion = reply.version;
+    }
+    const retyped = reason === 'settle' ? caretChapterId() : null;
+    const next = new Map();
+    for (const chapter of document.querySelectorAll('.chapter[data-id]')) {
+      const id = chapter.dataset.id;
+      const body = chapter.querySelector('.chapter-body');
+      const refs = trackerRefsReply.byChapter[chapterNumber(id)];
+      if (!body || !refs) continue;
+      const key = JSON.stringify(refs);
+      const had = trackerRefsChapters.get(id);
+      const kept = had && had.body === body && had.key === key && id !== retyped;
+      next.set(id, kept ? had : { body, key, entries: findTrackerRefs(body, refs) });
+    }
+    trackerRefsChapters = next;
+    trackerRefsPainted = [...next.values()].flatMap((c) => c.entries);
+    CSS.highlights.set(TRACKER_REFS, new Highlight(...trackerRefsPainted.map((p) => p.range)));
+  })().finally(() => {
+    trackerRefsPainting = null;
+    const queued = trackerRefsQueued;
+    trackerRefsQueued = null;
+    if (queued) paintTrackerRefs(queued);
+  });
+  return trackerRefsPainting;
 }
 
 // Repaint once typing or scrolling settles — the text has moved under the
-// ranges, and other chapters may have come into the DOM.
+// ranges of the chapter being written in.
 function schedulePaintTrackerRefs() {
   if (!trackerRefsOn) return;
   clearTimeout(trackerRefsPaintTimer);
-  trackerRefsPaintTimer = setTimeout(() => paintTrackerRefs(true), 800);
+  trackerRefsPaintTimer = setTimeout(() => paintTrackerRefs('settle'), 800);
+}
+
+// The tracker's write counter, watched by a long-poll: /__version holds
+// its reply until the counter moves (or 20 s pass), so a reference added
+// from the drawer or the palette is tinted the moment it's saved. One
+// watcher at a time, stopped with Refs. A round that comes straight back
+// (an older server or a stub answering at once, a failed fetch) waits a
+// moment before the next, so this can't spin.
+let trackerRefsWatch = null;
+async function watchTrackerRefs() {
+  if (trackerRefsWatch) return;
+  const watch = trackerRefsWatch = new AbortController();
+  for (;;) {
+    if (watch.signal.aborted || !trackerRefsOn) break;
+    const started = Date.now();
+    let version;
+    if (trackerReadyUrl) {
+      try {
+        const after = trackerRefsVersion === null ? '' : '&after=' + encodeURIComponent(trackerRefsVersion);
+        version = (await (await fetch(trackerReadyUrl + '__version?wait=20000' + after, { signal: watch.signal })).json()).version;
+      } catch { /* asked again below */ }
+    }
+    if (watch.signal.aborted) break;
+    if (version !== undefined && version !== trackerRefsVersion) await paintTrackerRefs('version');
+    if (Date.now() - started < 250) await new Promise((resolve) => setTimeout(resolve, version === undefined ? 1000 : 250));
+  }
+  if (trackerRefsWatch === watch) trackerRefsWatch = null;
 }
 
 async function setTrackerRefs(on) {
@@ -941,10 +1008,15 @@ async function setTrackerRefs(on) {
   button.classList.toggle('active', on);
   button.setAttribute('aria-pressed', on ? 'true' : 'false');
   try { localStorage.setItem('neo-tracker-refs', on ? '1' : '0'); } catch { /* not remembered */ }
-  if (!on) { clearTrackerRefs(); return; }
+  if (!on) {
+    if (trackerRefsWatch) { trackerRefsWatch.abort(); trackerRefsWatch = null; }
+    clearTrackerRefs();
+    return;
+  }
   if (!trackerReadyUrl) await ensureTrackerPane(); // starts or finds the dev server; the pane stays closed
   if (!trackerReadyUrl) { toast(t("The tracker isn't available right now.")); return; }
-  paintTrackerRefs(true);
+  paintTrackerRefs('version');
+  watchTrackerRefs();
 }
 
 $('#tracker-refs-toggle').onclick = () => setTrackerRefs(!trackerRefsOn);
@@ -955,14 +1027,6 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   setTrackerRefs(!trackerRefsOn);
 });
-// A reference added from the drawer or the Ctrl+D palette lights up
-// within a few seconds: re-read only when the tracker says it wrote.
-setInterval(async () => {
-  if (!trackerRefsOn || !trackerReadyUrl) return;
-  let version;
-  try { version = (await (await fetch(trackerReadyUrl + '__version')).json()).version; } catch { return; }
-  if (version !== trackerRefsVersion) paintTrackerRefs(true);
-}, 3000);
 try { if (localStorage.getItem('neo-tracker-refs') === '1') setTrackerRefs(true); } catch { /* nothing kept */ }
 
 // The hover label.
