@@ -351,7 +351,7 @@ test('a caret in the manuscript is posted with its chapter and offset, measured 
   await js(`trackerNotifiedSelection = null; 0`);
   await selectHello();
   await tick(400);
-  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&caret=0 Hello');
+  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&caret=0&end=5 Hello');
   await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch7; trackerReadyUrl = window.__prevUrl7; 0`);
 });
 

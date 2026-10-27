@@ -392,19 +392,32 @@ function caretPlace() {
   const el = start.nodeType === Node.TEXT_NODE ? start.parentElement : start;
   const body = el && el.closest ? el.closest('.chapter-body') : null;
   const chapter = body && body.closest('.chapter[data-id]');
-  if (!body || !chapter) return null;
-  const path = [];
-  for (let n = start; n !== body; n = n.parentNode) path.unshift(Array.prototype.indexOf.call(n.parentNode.childNodes, n));
+  if (!body || !chapter || !body.contains(range.endContainer)) return null;
   const clone = body.cloneNode(true);
-  let at = clone;
-  for (const i of path) at = at.childNodes[i];
-  const mark = document.createTextNode('\u0000');
-  if (at.nodeType === Node.TEXT_NODE) { at.splitText(range.startOffset); at.after(mark); } else at.insertBefore(mark, at.childNodes[range.startOffset] || null);
+  // The same node in the clone, by the path of child indexes down to it.
+  const twin = (node) => {
+    const path = [];
+    for (let n = node; n !== body; n = n.parentNode) path.unshift(Array.prototype.indexOf.call(n.parentNode.childNodes, n));
+    let at = clone;
+    for (const i of path) at = at.childNodes[i];
+    return at;
+  };
+  const mark = (node, offset, char) => {
+    const at = twin(node);
+    const m = document.createTextNode(char);
+    if (at.nodeType === Node.TEXT_NODE) { at.splitText(offset); at.after(m); } else at.insertBefore(m, at.childNodes[offset] || null);
+  };
+  // The end first, so splitting the start's text node can't move it.
+  if (!range.collapsed) mark(range.endContainer, range.endOffset, '\u0001');
+  mark(range.startContainer, range.startOffset, '\u0000');
   clone.querySelectorAll(UNCOUNTED).forEach((n) => n.remove());
   const marked = plainText(clone);
   const offset = marked.indexOf('\u0000');
   if (offset === -1) return null;
-  return { chapter: chapterNumber(chapter.dataset.id), offset, text: marked.slice(0, offset) + marked.slice(offset + 1) };
+  const endMark = marked.indexOf('\u0001');
+  const text = marked.replace('\u0000', '').replace('\u0001', '');
+  const end = endMark === -1 ? undefined : endMark > offset ? endMark - 1 : endMark;
+  return { chapter: chapterNumber(chapter.dataset.id), offset, ...(end === undefined ? {} : { end }), text };
 }
 
 // The text of each chapter as the tracker last got it, so the cursor's
@@ -444,6 +457,7 @@ function notifyTrackerOfSelection() {
     const params = [];
     if (occurrence && occurrence > 1) params.push('occurrence=' + occurrence);
     if (caret) params.push('chapter=' + caret.chapter, 'caret=' + caret.offset);
+    if (caret && caret.end !== undefined && text) params.push('end=' + caret.end);
     const qs = params.length ? '?' + params.join('&') : '';
     const post = () => fetch(trackerReadyUrl + '__neo-selection' + qs, { method: 'POST', body: text }).catch(() => {});
     if (caret) sendChapterTextIfChanged(caret.chapter, caret.text).then(post);
@@ -1254,6 +1268,11 @@ window.neoHooks = {
     const onManuscript = name === 'manuscript';
     $('#side-pane-toggle').hidden = !onManuscript;
     $('#tracker-refs-toggle').hidden = !onManuscript;
+    // The tracker starts with the book, not with the first look at the
+    // drawer: it follows the text as it's edited (every typing pause sends
+    // the chapter), so edits made before it was up would be a gap. The
+    // pane itself stays closed.
+    if (onManuscript && !trackerReadyUrl && !NO_HOVER) ensureTrackerPane();
     const pane = $('#side-pane');
     if (!onManuscript && !$('#editor-view').classList.contains('darlings-tab') && pane.dataset.pinned !== '1') closeSidePane();
   },
