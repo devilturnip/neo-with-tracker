@@ -1,10 +1,10 @@
-// End-to-end tests for the litrpg-tracker hover panel: the right-edge hover
-// gesture, the dual-mode #side-pane sharing with Stickies, and that neither
-// entry point leaves the pane in the wrong mode. Deliberately doesn't depend
-// on the litrpg-tracker repo actually being checked out (ensureTrackerPane()
-// degrades to a "not available" message when it isn't, by design) — this
-// suite only exercises the DOM/mode mechanics, which must hold either way.
-// Run with `npm run test:tracker`.
+// End-to-end tests for the litrpg-tracker bridge (tracker-bridge.js), run
+// in a real NEO window: the right-edge hover panel and its sharing with
+// Stickies, Refs tinting and jumps, the New entry and Ctrl+D gestures,
+// Escape, and what NEO posts to the tracker (chapter, selection, cursor,
+// text, darlings) in what order. The tracker server itself is stubbed per
+// test by replacing window.fetch; `reset()` puts the bridge's state back
+// between tests. Run with `npm run test:tracker`.
 
 'use strict';
 
@@ -45,6 +45,16 @@ const paneState = () => js(`(() => {
 const hover = (id, on) => js(`document.getElementById('${id}').dispatchEvent(new MouseEvent('${on ? 'mouseenter' : 'mouseleave'}', { bubbles: false }))`);
 
 const tests = [];
+
+// The bridge's state as a fresh window has it, for a test that must not
+// inherit the last one's: pane closed, Refs off, nothing selected, no
+// pending debounces or sent-text memory.
+const reset = () => js(`(() => {
+  closeSidePane(); setTrackerRefs(false); getSelection().removeAllRanges();
+  trackerFlowActive = false; trackerEditing = false; trackerNotifiedSelection = null;
+  trackerSentText.clear(); trackerSentDarlings = null;
+  clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); return 0;
+})()`);
 const test = (name, fn) => tests.push({ name, fn });
 
 test('hovering the right edge opens the pane in tracker mode', async () => {
@@ -311,6 +321,7 @@ const ctrlClickHello = async () => {
 };
 
 test('Alt+Shift+D adds the event passages, in their own highlight', async () => {
+  await reset();
   await stubRefs([
     { kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' },
     { kind: 'character', id: 'jake', name: 'Jake', label: 'HP −3', quote: 'llo', extra: true },
@@ -332,6 +343,7 @@ test('Alt+Shift+D adds the event passages, in their own highlight', async () => 
 });
 
 test('a caret in the manuscript is posted with its chapter and offset, measured as chapterText is', async () => {
+  await reset();
   await js(`
     window.__prevUrl7 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
     window.__realFetch7 = window.fetch; window.__posts = [];
@@ -357,6 +369,7 @@ test('a caret in the manuscript is posted with its chapter and offset, measured 
 });
 
 test('pushes leave in order: the chapter text before the selection made in it', async () => {
+  await reset();
   await js(`
     window.__prevUrl9 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
     window.__realFetch9 = window.fetch; window.__order = [];
@@ -373,6 +386,7 @@ test('pushes leave in order: the chapter text before the selection made in it', 
 });
 
 test('a section that is not a story chapter never posts as one', async () => {
+  await reset();
   const setup = await js(`(() => { try {
     window.__prevUrl10 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
     window.__realFetch10 = window.fetch; window.__posts = [];
@@ -429,6 +443,7 @@ test('Escape with a tracker dialog up closes it and the drawer; the book stays o
 });
 
 test('a passage in a darling is tinted on the Darlings tab, from byDarling', async () => {
+  await reset();
   await js(`
     window.__prevUrl8 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
     window.__realFetch8 = window.fetch;
