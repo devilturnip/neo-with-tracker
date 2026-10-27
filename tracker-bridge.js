@@ -41,7 +41,7 @@ $('#sticky-list').after(trackerElement('<div id="tracker-pane-body"></div>'));
 // the right edge belongs to the tracker (see openSidePane)
 $('#tabs .tab[data-tab="manuscript"]').after(trackerElement('<button id="side-pane-toggle" data-i18n-title title="Notes & Comments" data-i18n-label="Notes & Comments" aria-pressed="false"><span data-i18n>Stickies</span></button>'));
 // tint every passage the tracker has a reference on (see paintTrackerRefs)
-$('#side-pane-toggle').after(trackerElement('<button id="tracker-refs-toggle" data-i18n-title title="Show the tracker’s references in the text (Alt+D)" aria-pressed="false"><span data-i18n>◎ Refs</span></button>'));
+$('#side-pane-toggle').after(trackerElement('<button id="tracker-refs-toggle" data-i18n-title title="Show the tracker’s references in the text (Alt+D); every other tracked passage too (Shift+click or Alt+Shift+D)" aria-pressed="false"><span data-i18n>◎ Refs</span></button>'));
 
 /* ================================================================== */
 /*  The side pane's two modes                                           */
@@ -887,12 +887,15 @@ window.addEventListener('blur', () => closePalette(false));
 /* ================================================================== */
 
 // Every reference the tracker stores, painted into the chapters on screen
-// as one CSS highlight, with a small label on hover naming whatever the
+// as one CSS highlight — and, with the extra layer on, every other passage
+// a chapter event is pinned to (an HP change, an item gained) as a second
+// highlight in its own colour — with a small label on hover naming whatever the
 // passage is a reference on — so a passage that's already referenced is
 // obvious before Ctrl+D. The highlight can't carry a tooltip of its own,
 // so the painted ranges are kept here and hit-tested against the cursor.
 let trackerRefsOn = false;
-let trackerRefsPainted = []; // [{ range, entities: [{ kind, id, name, label }] }]
+let trackerRefsExtra = false; // the event passages too
+let trackerRefsPainted = []; // [{ range, extra, entities: [{ kind, id, name, label }] }]
 let trackerRefsVersion = null;
 let trackerRefsReply = null; // the last /__references reply
 // Per chapter, the body painted, its references as sent, and what was
@@ -903,17 +906,18 @@ let trackerRefsPaintTimer = null;
 let trackerRefsPainting = null; // the paint under way, and the one asked for meanwhile
 let trackerRefsQueued = null;
 const TRACKER_REFS = 'neo-tracker-refs';
+const TRACKER_REFS_EXTRA = 'neo-tracker-refs-extra';
 
 function clearTrackerRefs() {
   trackerRefsPainted = [];
   trackerRefsChapters = new Map();
   trackerRefsReply = null;
-  if (window.CSS && CSS.highlights) CSS.highlights.delete(TRACKER_REFS);
+  if (window.CSS && CSS.highlights) { CSS.highlights.delete(TRACKER_REFS); CSS.highlights.delete(TRACKER_REFS_EXTRA); }
   hideTrackerRefTip();
 }
 
 // Every referenced passage in one chapter body; references sharing a
-// passage are one entry naming them all.
+// passage are one entry naming them all, extra only if all of them are.
 function findTrackerRefs(body, refs) {
   const byPassage = new Map();
   const lower = bodyPlainText(body).toLowerCase();
@@ -921,7 +925,8 @@ function findTrackerRefs(body, refs) {
     const range = quoteRange(body, ref.quote, ref.occurrence, lower);
     if (!range) continue;
     const at = rangeToTextPos(body, range.startContainer, range.startOffset) + ':' + range.toString().length;
-    const entry = byPassage.get(at) || { range, entities: [] };
+    const entry = byPassage.get(at) || { range, extra: true, entities: [] };
+    if (!ref.extra) entry.extra = false;
     if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
       entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label });
     }
@@ -960,8 +965,8 @@ function paintTrackerRefs(reason) {
     for (const chapter of document.querySelectorAll('.chapter[data-id]')) {
       const id = chapter.dataset.id;
       const body = chapter.querySelector('.chapter-body');
-      const refs = trackerRefsReply.byChapter[chapterNumber(id)];
-      if (!body || !refs) continue;
+      const refs = (trackerRefsReply.byChapter[chapterNumber(id)] || []).filter((r) => trackerRefsExtra || !r.extra);
+      if (!body || !refs.length) continue;
       const key = JSON.stringify(refs);
       const had = trackerRefsChapters.get(id);
       const kept = had && had.body === body && had.key === key && id !== retyped;
@@ -969,7 +974,9 @@ function paintTrackerRefs(reason) {
     }
     trackerRefsChapters = next;
     trackerRefsPainted = [...next.values()].flatMap((c) => c.entries);
-    CSS.highlights.set(TRACKER_REFS, new Highlight(...trackerRefsPainted.map((p) => p.range)));
+    const tint = (extra) => new Highlight(...trackerRefsPainted.filter((p) => p.extra === extra).map((p) => p.range));
+    CSS.highlights.set(TRACKER_REFS, tint(false));
+    CSS.highlights.set(TRACKER_REFS_EXTRA, tint(true));
   })().finally(() => {
     trackerRefsPainting = null;
     const queued = trackerRefsQueued;
@@ -1014,12 +1021,20 @@ async function watchTrackerRefs() {
   if (trackerRefsWatch === watch) trackerRefsWatch = null;
 }
 
-async function setTrackerRefs(on) {
+// `extra` the event passages too; left out, it stays as it was.
+async function setTrackerRefs(on, extra = trackerRefsExtra) {
+  const repaint = trackerRefsOn && on && extra !== trackerRefsExtra;
   trackerRefsOn = on;
+  trackerRefsExtra = extra;
   const button = $('#tracker-refs-toggle');
   button.classList.toggle('active', on);
   button.setAttribute('aria-pressed', on ? 'true' : 'false');
-  try { localStorage.setItem('neo-tracker-refs', on ? '1' : '0'); } catch { /* not remembered */ }
+  button.querySelector('span').textContent = on && extra ? t('◎ Refs+') : t('◎ Refs');
+  try {
+    localStorage.setItem('neo-tracker-refs', on ? '1' : '0');
+    localStorage.setItem('neo-tracker-refs-extra', extra ? '1' : '0');
+  } catch { /* not remembered */ }
+  if (repaint) { paintTrackerRefs('settle'); return; } // the filter changed the chapters' keys
   if (!on) {
     if (trackerRefsWatch) { trackerRefsWatch.abort(); trackerRefsWatch = null; }
     clearTrackerRefs();
@@ -1031,15 +1046,21 @@ async function setTrackerRefs(on) {
   watchTrackerRefs();
 }
 
-$('#tracker-refs-toggle').onclick = () => setTrackerRefs(!trackerRefsOn);
+// Shift (with the click or Alt+D) switches the extra layer, turning Refs on
+// with it if they're off; plain, Refs on or off, the layer as last chosen.
+const toggleTrackerRefs = (shift) =>
+  shift ? setTrackerRefs(true, !(trackerRefsOn && trackerRefsExtra)) : setTrackerRefs(!trackerRefsOn);
+$('#tracker-refs-toggle').onclick = (e) => toggleTrackerRefs(e.shiftKey);
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented) return;
   // e.code, not e.key: ⌥D types a character on a Mac
-  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.code !== 'KeyD') return;
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyD') return;
   e.preventDefault();
-  setTrackerRefs(!trackerRefsOn);
+  toggleTrackerRefs(e.shiftKey);
 });
-try { if (localStorage.getItem('neo-tracker-refs') === '1') setTrackerRefs(true); } catch { /* nothing kept */ }
+try {
+  if (localStorage.getItem('neo-tracker-refs') === '1') setTrackerRefs(true, localStorage.getItem('neo-tracker-refs-extra') === '1');
+} catch { /* nothing kept */ }
 
 // The hover label.
 let trackerRefTip = null;

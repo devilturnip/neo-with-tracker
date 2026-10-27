@@ -310,6 +310,27 @@ const ctrlClickHello = async () => {
   return js(`document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('mousedown', { clientX: ${p.x}, clientY: ${p.y}, ctrlKey: true, button: 0, bubbles: true, cancelable: true })) ? 'not prevented' : 'prevented'`);
 };
 
+test('Alt+Shift+D adds the event passages, in their own highlight', async () => {
+  await stubRefs([
+    { kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' },
+    { kind: 'character', id: 'jake', name: 'Jake', label: 'HP −3', quote: 'llo', extra: true },
+  ]);
+  const key = (shiftKey) => js(`document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', key: 'd', altKey: true, shiftKey: ${shiftKey}, bubbles: true, cancelable: true })); 0`);
+  const sizes = () => js(`[CSS.highlights.get('neo-tracker-refs')?.size ?? 0, CSS.highlights.get('neo-tracker-refs-extra')?.size ?? 0]`);
+  await key(false);
+  await tick(300);
+  assert.deepEqual(await sizes(), [1, 0], 'plain Refs leave the event passage out');
+  await key(true);
+  await tick(300);
+  assert.deepEqual(await sizes(), [1, 1], 'Refs+ tints it separately');
+  assert.equal(await js(`document.querySelector('#tracker-refs-toggle span').textContent`), '◎ Refs+');
+  assert.equal(await js(`localStorage.getItem('neo-tracker-refs-extra')`), '1');
+  await key(true);
+  await tick(300);
+  assert.deepEqual(await sizes(), [1, 0], 'and takes it away again, Refs staying on');
+  await js(`setTrackerRefs(false); localStorage.setItem('neo-tracker-refs-extra', '0'); window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
+});
+
 test('Ctrl+click a tinted passage opens its entity in the drawer', async () => {
   await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
   await stubRefs([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]);

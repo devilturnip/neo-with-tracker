@@ -14,6 +14,17 @@ body.light ::highlight(neo-tracker-refs) {
   background-color: rgba(176, 130, 40, 0.14);
   text-decoration: underline dotted rgba(150, 105, 20, 0.7);
 }
+/* Refs+ (Alt+Shift+D): every other passage a chapter event is pinned to,
+   in a cool blue so it never reads as a reference. A passage that is both
+   is painted as a reference only. */
+::highlight(neo-tracker-refs-extra) {
+  background-color: rgba(110, 160, 220, 0.15);
+  text-decoration: underline dotted rgba(110, 160, 220, 0.75);
+}
+body.light ::highlight(neo-tracker-refs-extra) {
+  background-color: rgba(50, 110, 190, 0.11);
+  text-decoration: underline dotted rgba(40, 95, 170, 0.7);
+}
 /* the label naming what a hovered reference belongs to — like a pop-menu */
 #tracker-refs-tip {
   position: fixed; z-index: 955; pointer-events: none; max-width: 320px;
