@@ -297,10 +297,11 @@ function notifyTrackerOfChapter(immediate) {
   if (!trackerReadyUrl || !currentChapterId || !book) return;
   clearTimeout(trackerNotifyTimer);
   const go = () => {
+    if (!isStoryChapter(currentChapterId)) return;
     const n = chapterNumber(currentChapterId);
     if (n === trackerNotifiedChapter) return;
     trackerNotifiedChapter = n;
-    fetch(trackerReadyUrl + '__neo-chapter?n=' + n, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+    trackerPost('__neo-chapter?n=' + n);
   };
   if (immediate) go();
   else trackerNotifyTimer = setTimeout(go, 400);
@@ -318,12 +319,13 @@ function notifyTrackerOfWordCount() {
   if (!trackerReadyUrl || !currentChapterId || !book) return;
   clearTimeout(trackerNotifyWordsTimer);
   trackerNotifyWordsTimer = setTimeout(() => {
+    if (!isStoryChapter(currentChapterId)) return;
     const n = chapterNumber(currentChapterId);
     const words = chapterWords(currentChapterId);
     const key = n + ':' + words;
     if (key === trackerNotifiedWords) return;
     trackerNotifiedWords = key;
-    fetch(trackerReadyUrl + '__neo-wordcount?chapter=' + n + '&words=' + words, { method: 'POST', mode: 'no-cors' }).catch(() => {});
+    trackerPost('__neo-wordcount?chapter=' + n + '&words=' + words);
   }, 1000); // typing settles before this fires — no point syncing every keystroke
 }
 
@@ -392,7 +394,7 @@ function caretPlace() {
   const el = start.nodeType === Node.TEXT_NODE ? start.parentElement : start;
   const body = el && el.closest ? el.closest('.chapter-body') : null;
   const chapter = body && body.closest('.chapter[data-id]');
-  if (!body || !chapter || !body.contains(range.endContainer)) return null;
+  if (!body || !chapter || !body.contains(range.endContainer) || !isStoryChapter(chapter.dataset.id)) return null;
   const clone = body.cloneNode(true);
   // The same node in the clone, by the path of child indexes down to it.
   const twin = (node) => {
@@ -417,14 +419,33 @@ function caretPlace() {
   const endMark = marked.indexOf('\u0001');
   const text = marked.replace('\u0000', '').replace('\u0001', '');
   const end = endMark === -1 ? undefined : endMark > offset ? endMark - 1 : endMark;
-  return { chapter: chapterNumber(chapter.dataset.id), offset, ...(end === undefined ? {} : { end }), text };
+  return { chapter: chapterNumber(chapter.dataset.id), chapterId: chapter.dataset.id, offset, ...(end === undefined ? {} : { end }), text };
 }
+
+// Every NEO → tracker push leaves in order, one at a time, so the server
+// never sees a selection before the text it was made in, or an older copy
+// of a chapter after a newer one. Resolves to the reply, or null when the
+// request failed — a caller marks something as sent only on a 2xx. Every
+// push names the book, so a tracker bound to another book can refuse it.
+let trackerOutbox = Promise.resolve();
+function trackerPost(path, init = {}) {
+  const url = trackerReadyUrl + path + (path.includes('?') ? '&' : '?') + 'book=' + encodeURIComponent(book ? book.id : '');
+  const send = () => fetch(url, { method: 'POST', ...init }).then((r) => (r.ok ? r : null)).catch(() => null);
+  const turn = trackerOutbox.then(send, send);
+  trackerOutbox = turn.then(() => undefined, () => undefined);
+  return turn;
+}
+
+// Only the story's own chapters are the tracker's: a prologue, a part
+// divider or an epilogue has no number of its own (NEO numbers them by
+// the chapter before), and would be taken for that chapter's text.
+const isStoryChapter = (chId) => chapterKind(chId) === 'chapter';
 
 // NEO's darlings as the tracker takes them: a passage cut from the
 // manuscript lives on in one, and the tracker follows it there.
 function trackerDarlings() {
   return darlings.map((d) => ({
-    id: d.id, chapter: d.chapterId && book ? chapterNumber(d.chapterId) : null,
+    id: d.id, chapter: d.chapterId && book && isStoryChapter(d.chapterId) ? chapterNumber(d.chapterId) : null,
     text: d.text, date: d.date,
   }));
 }
@@ -439,23 +460,37 @@ async function sendChapterTextIfChanged(number, text) {
   const list = trackerDarlings();
   const sig = JSON.stringify(list);
   const sameText = trackerSentText.get(number) === text;
-  if (sameText && sig === trackerSentDarlings) return;
-  trackerSentText.set(number, text);
-  trackerSentDarlings = sig;
-  await fetch(trackerReadyUrl + '__neo-manuscript-text', {
-    method: 'POST',
-    body: JSON.stringify({ partial: true, chapters: sameText ? [] : [{ number, text }], darlings: list }),
-  }).catch(() => {});
+  const sameDarlings = sig === trackerSentDarlings;
+  if (sameText && sameDarlings) return;
+  const reply = await trackerPost('__neo-manuscript-text', {
+    body: JSON.stringify({ partial: true, chapters: sameText ? [] : [{ number, text }], ...(sameDarlings ? {} : { darlings: list }) }),
+  });
+  if (!reply) return; // not sent: tried again on the next change
+  if (!sameText) trackerSentText.set(number, text);
+  if (!sameDarlings) trackerSentDarlings = sig;
 }
 // After a cut, a restore or a delete: the chapter's text and the darlings,
 // once things settle (restoring puts text back with no selection change).
+// The chapter's HTML as last measured is remembered, so an unchanged
+// chapter costs no clone — chapterText is a clone, a clean and a walk.
 let trackerSettleTimer = null;
+const trackerMeasured = new Map(); // chapter id -> chapterHTML when its text was last sent
+function chapterTextIfChanged(chId) {
+  const html = chapterHTML[chId];
+  if (html !== undefined && trackerMeasured.get(chId) === html) return null;
+  trackerMeasured.set(chId, html);
+  return chapterText(chId);
+}
 function sendCurrentChapterSoon() {
   if (!trackerReadyUrl || !book) return;
   clearTimeout(trackerSettleTimer);
   trackerSettleTimer = setTimeout(() => {
     const chId = currentChapterId || book.chapterOrder[0];
-    if (chId) sendChapterTextIfChanged(chapterNumber(chId), chapterText(chId));
+    if (!chId || !isStoryChapter(chId)) return;
+    const text = chapterTextIfChanged(chId);
+    if (text !== null || trackerSentDarlings !== JSON.stringify(trackerDarlings())) {
+      sendChapterTextIfChanged(chapterNumber(chId), text ?? trackerSentText.get(chapterNumber(chId)) ?? chapterText(chId));
+    }
   }, 300);
 }
 
@@ -471,9 +506,19 @@ function notifyTrackerOfSelection() {
   clearTimeout(trackerNotifySelectionTimer);
   trackerNotifySelectionTimer = setTimeout(() => {
     const info = selectionInfo();
-    const text = info ? info.text : '';
-    const occurrence = info ? info.occurrence : null;
     const caret = caretPlace();
+    // The selection's words as the tracker's copy of the text has them —
+    // one newline between paragraphs, footnotes and marks left out —
+    // trimmed, with the offsets following the trim.
+    let text = info ? info.text : '';
+    if (caret && caret.end !== undefined && info) {
+      const raw = caret.text.slice(caret.offset, caret.end);
+      const lead = raw.length - raw.trimStart().length;
+      text = raw.trim();
+      caret.offset += lead;
+      caret.end = caret.offset + text.length;
+    }
+    const occurrence = info ? info.occurrence : null;
     // Keyed on text, occurrence and cursor together, not text alone —
     // otherwise selecting the second "Cheshire" right after the first would
     // look unchanged and never get reposted.
@@ -485,9 +530,11 @@ function notifyTrackerOfSelection() {
     if (caret) params.push('chapter=' + caret.chapter, 'caret=' + caret.offset);
     if (caret && caret.end !== undefined && text) params.push('end=' + caret.end);
     const qs = params.length ? '?' + params.join('&') : '';
-    const post = () => fetch(trackerReadyUrl + '__neo-selection' + qs, { method: 'POST', body: text }).catch(() => {});
-    if (caret) sendChapterTextIfChanged(caret.chapter, caret.text).then(post);
-    else post();
+    const post = () => trackerPost('__neo-selection' + qs, { body: text });
+    if (caret) {
+      trackerMeasured.set(caret.chapterId, chapterHTML[caret.chapterId]);
+      sendChapterTextIfChanged(caret.chapter, caret.text).then(post);
+    } else post();
   }, 120);
 }
 document.addEventListener('selectionchange', notifyTrackerOfSelection);
@@ -539,17 +586,21 @@ function notifyTrackerOfNewChapter(chId) {
 // manuscript won't fit in a URL.
 async function sendManuscriptText() {
   if (!trackerReadyUrl || !book) return;
-  const chapters = book.chapterOrder.map((chId) => ({
-    number: chapterNumber(chId),
-    text: chapterText(chId),
-  }));
-  for (const { number, text } of chapters) trackerSentText.set(number, text);
+  // Only chapters whose text the tracker hasn't got yet: measuring every
+  // chapter of a novel is a noticeable hitch, so an unchanged one is skipped.
+  const chapters = [];
+  for (const chId of book.chapterOrder.filter(isStoryChapter)) {
+    const number = chapterNumber(chId);
+    const text = chapterTextIfChanged(chId);
+    if (text !== null && trackerSentText.get(number) !== text) chapters.push({ number, text });
+  }
   const list = trackerDarlings();
-  trackerSentDarlings = JSON.stringify(list);
-  await fetch(trackerReadyUrl + '__neo-manuscript-text', {
-    method: 'POST',
-    body: JSON.stringify({ chapters, darlings: list }),
-  }).catch(() => {});
+  const sig = JSON.stringify(list);
+  if (chapters.length === 0 && sig === trackerSentDarlings) return;
+  const reply = await trackerPost('__neo-manuscript-text', { body: JSON.stringify({ partial: true, chapters, darlings: list }) });
+  if (!reply) return;
+  for (const { number, text } of chapters) trackerSentText.set(number, text);
+  trackerSentDarlings = sig;
 }
 setInterval(() => { sendManuscriptText(); }, 600000); // 10 minutes
 
@@ -653,15 +704,15 @@ function quoteRange(body, quote, occurrence, lowerText) {
   const needle = clean.toLowerCase();
   // Collect every match rather than stopping at the first — occurrence
   // picks which one (1 = the first, matching how most references don't
-  // carry an occurrence at all and mean exactly that). Clamped to the
-  // last match still found, not treated as "not found", if the text has
-  // since changed and that many no longer exist.
+  // carry an occurrence at all and mean exactly that). Fewer matches than
+  // that is "not found", not the last one: pointing at some other mention
+  // would be worse than saying so.
   const matches = [];
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
     matches.push(at);
   }
-  if (matches.length === 0) return null;
-  const idx = matches[Math.min((occurrence || 1) - 1, matches.length - 1)];
+  const idx = matches[(occurrence || 1) - 1];
+  if (idx === undefined) return null;
   const startR = textPosToRange(body, idx);
   const endR = textPosToRange(body, idx + clean.length);
   if (!startR || !endR) return null;

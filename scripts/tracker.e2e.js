@@ -346,13 +346,51 @@ test('a caret in the manuscript is posted with its chapter and offset, measured 
   })()`);
   await tick(400);
   const expected = await js(`chapterText(document.querySelector('.chapter[data-id]').dataset.id).indexOf('lo')`);
-  assert.deepEqual(await js(`window.__posts`), ['?chapter=1&caret=' + expected + ' ']);
+  const bookId = await js(`book.id`);
+  assert.deepEqual(await js(`window.__posts`), ['?chapter=1&caret=' + expected + '&book=' + encodeURIComponent(bookId) + ' ']);
   // the same spot again isn't reposted; a selection from it carries the caret too
   await js(`trackerNotifiedSelection = null; 0`);
   await selectHello();
   await tick(400);
-  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&caret=0&end=5 Hello');
+  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&caret=0&end=5&book=' + encodeURIComponent(bookId) + ' Hello');
   await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch7; trackerReadyUrl = window.__prevUrl7; 0`);
+});
+
+test('pushes leave in order: the chapter text before the selection made in it', async () => {
+  await js(`
+    window.__prevUrl9 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch9 = window.fetch; window.__order = [];
+    window.fetch = (u) => { const url = String(u); return new Promise((resolve) => setTimeout(() => {
+      if (url.includes('__neo-manuscript-text')) window.__order.push('text');
+      if (url.includes('__neo-selection')) window.__order.push('selection');
+      resolve({ ok: true, json: async () => ({}) });
+    }, url.includes('__neo-manuscript-text') ? 150 : 0)); };
+    trackerSentText.clear(); trackerNotifiedSelection = null; 0`);
+  await selectHello();
+  await tick(600);
+  assert.deepEqual(await js(`window.__order`), ['text', 'selection']);
+  await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch9; trackerReadyUrl = window.__prevUrl9; 0`);
+});
+
+test('a section that is not a story chapter never posts as one', async () => {
+  const setup = await js(`(() => { try {
+    window.__prevUrl10 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch10 = window.fetch; window.__posts = [];
+    window.fetch = (u) => { window.__posts.push(String(u)); return Promise.resolve({ ok: true, json: async () => ({}) }); };
+    const ch = document.querySelector('.chapter[data-id]');
+    book.chapterKinds = book.chapterKinds || {};
+    window.__kind = book.chapterKinds[ch.dataset.id];
+    book.chapterKinds[ch.dataset.id] = 'epilogue';
+    trackerNotifiedSelection = null; trackerSentText.clear(); return 'ok';
+  } catch (e) { return 'setup failed: ' + e; } })()`);
+  try {
+    assert.equal(setup, 'ok');
+    await selectHello();
+    await tick(400);
+    assert.deepEqual(await js(`window.__posts.filter((u) => u.includes('__neo-manuscript-text') || u.includes('chapter='))`), []);
+  } finally {
+    await js(`const ch = document.querySelector('.chapter[data-id]'); if (book.chapterKinds) { if (window.__kind) book.chapterKinds[ch.dataset.id] = window.__kind; else delete book.chapterKinds[ch.dataset.id]; } getSelection().removeAllRanges(); if (window.__realFetch10) window.fetch = window.__realFetch10; if (window.__prevUrl10 !== undefined) trackerReadyUrl = window.__prevUrl10; 0`);
+  }
 });
 
 test('Escape with a tracker dialog up closes it and the drawer; the book stays open', async () => {
@@ -430,7 +468,7 @@ test('Ctrl+click a passage several entities reference asks which one', async () 
     { kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' },
     { kind: 'character', id: 'greeter', name: 'Greeter', label: 'character', quote: 'Hello' },
   ]);
-  await js(`paintTrackerRefs(true); 0`);
+  await js(`paintTrackerRefs('version'); 0`);
   await tick(300);
   await ctrlClickHello();
   await tick(200);
