@@ -359,12 +359,13 @@ test('a caret in the manuscript is posted with its chapter and offset, measured 
   await tick(400);
   const expected = await js(`chapterText(document.querySelector('.chapter[data-id]').dataset.id).indexOf('lo')`);
   const bookId = await js(`book.id`);
-  assert.deepEqual(await js(`window.__posts`), ['?chapter=1&caret=' + expected + '&book=' + encodeURIComponent(bookId) + ' ']);
+  const chId = await js(`document.querySelector('.chapter[data-id]').dataset.id`);
+  assert.deepEqual(await js(`window.__posts`), ['?chapter=1&chapterId=' + encodeURIComponent(chId) + '&caret=' + expected + '&book=' + encodeURIComponent(bookId) + ' ']);
   // the same spot again isn't reposted; a selection from it carries the caret too
   await js(`trackerNotifiedSelection = null; 0`);
   await selectHello();
   await tick(400);
-  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&caret=0&end=5&book=' + encodeURIComponent(bookId) + ' Hello');
+  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&chapterId=' + encodeURIComponent(chId) + '&caret=0&end=5&book=' + encodeURIComponent(bookId) + ' Hello');
   await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch7; trackerReadyUrl = window.__prevUrl7; 0`);
 });
 
@@ -383,6 +384,32 @@ test('pushes leave in order: the chapter text before the selection made in it', 
   await tick(600);
   assert.deepEqual(await js(`window.__order`), ['text', 'selection']);
   await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch9; trackerReadyUrl = window.__prevUrl9; 0`);
+});
+
+test('every push names the chapter by NEO\'s id and carries the book\'s chapter order', async () => {
+  await reset();
+  await js(`
+    window.__prevUrl11 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch11 = window.fetch; window.__bodies = []; window.__urls = [];
+    window.fetch = (u, init) => { const url = String(u); window.__urls.push(url);
+      if (url.includes('__neo-manuscript-text')) window.__bodies.push(JSON.parse(init.body));
+      return Promise.resolve({ ok: true, json: async () => ({}) }); };
+    0`);
+  try {
+    await selectHello();
+    await tick(600);
+    const chId = await js(`document.querySelector('.chapter[data-id]').dataset.id`);
+    const body = await js(`window.__bodies[0]`);
+    assert.ok(body, 'the chapter text was pushed');
+    assert.deepEqual(body.order, [{ id: chId, number: 1 }]);
+    assert.equal(body.chapters[0].id, chId);
+    assert.equal(body.chapters[0].number, 1);
+    const sel = await js(`window.__urls.find((u) => u.includes('__neo-selection'))`);
+    assert.ok(sel.includes('chapterId=' + encodeURIComponent(chId)), 'the selection names the chapter by id: ' + sel);
+    assert.ok(sel.includes('chapter=1&'), 'and by number: ' + sel);
+  } finally {
+    await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch11; trackerReadyUrl = window.__prevUrl11; 0`);
+  }
 });
 
 test('a section that is not a story chapter never posts as one', async () => {
@@ -551,7 +578,7 @@ test('right-clicking a selection opens the drawer and asks for a New entry — n
   assert.equal(claimed, true, 'the bridge claimed the right-click');
   await tick(300);
   assert.equal(await js(`!!document.querySelector('.pop-menu')`), false, 'no kind or owner menu');
-  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello&chapter=1']);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello&chapter=1&chapterId=' + await js(`document.querySelector('.chapter[data-id]').dataset.id`)]);
   const state = await paneState();
   assert.equal(state.open, true);
   assert.equal(state.mode, 'tracker');
@@ -564,7 +591,7 @@ test('Ctrl+Shift+A asks for a New entry from the keyboard: the selection as its 
   assert.equal(await selectHello(), 'Hello');
   await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
   await tick(300);
-  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello&chapter=1']);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=Hello&chapter=1&chapterId=' + await js(`document.querySelector('.chapter[data-id]').dataset.id`)]);
   assert.equal(await js(`document.activeElement === trackerFrame`), true, 'the keyboard is in the drawer');
   await js(`if (window.__stubFrame) { trackerFrame.remove(); trackerFrame = null; } delete window.__stubFrame; 0`);
   await js(`window.__intents = []; getSelection().removeAllRanges(); 0`);
@@ -579,7 +606,7 @@ test('Ctrl+Shift+A asks for a New entry from the keyboard: the selection as its 
   })()`);
   await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))`);
   await tick(300);
-  assert.deepEqual(await js(`window.__intents`), ['type=new&text=l&chapter=1&occurrence=2']);
+  assert.deepEqual(await js(`window.__intents`), ['type=new&text=l&chapter=1&chapterId=' + await js(`document.querySelector('.chapter[data-id]').dataset.id`) + '&occurrence=2']);
   await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
   await js(`window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
@@ -618,7 +645,7 @@ test('Ctrl+D opens the palette prefilled with the selection; Enter files it and 
   assert.equal(await js(`document.querySelectorAll('#tracker-palette li').length`), 1);
   await js(`document.querySelector('#tracker-palette input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`);
   await tick(300);
-  assert.deepEqual(await js(`window.__posts`), [{ target: 'item', id: 'sword', chapter: 1, quote: 'Hello' }]);
+  assert.deepEqual(await js(`window.__posts`), [{ target: 'item', id: 'sword', chapter: 1, chapterId: await js(`document.querySelector('.chapter[data-id]').dataset.id`), quote: 'Hello' }]);
   assert.equal(await js(`!!document.getElementById('tracker-palette')`), false, 'the palette closed');
   assert.equal(await js(`getSelection().toString()`), 'Hello', 'the selection is back');
   assert.equal(await js(`document.activeElement === document.querySelector('.chapter-body')`), true, 'and so is focus');
