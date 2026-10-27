@@ -254,6 +254,7 @@ function ensureTrackerPane() {
     }
     // a trailing slash matters for the URLs built from this below
     trackerReadyUrl = result.url.replace(/\/?$/, '/');
+    watchTrackerMailbox(); // what the tracker has for NEO, from now on
     notifyTrackerOfChapter(true); // the dev server is up — post the current chapter now, so it's already there the moment the page's own poll starts (no need to wait on the iframe's load)
     schedulePaintTrackerRefs(); // Refs left on from last time can paint now
     if (!trackerFrame) {
@@ -593,7 +594,7 @@ function notifyTrackerOfNewChapter(chId) {
 
 // The whole book's plain text, one entry per chapter — pushed to the
 // tracker every 10 minutes (see the interval below) or right away when its
-// own "Check now" button asks for it (see checkWantsManuscript below), for
+// own "Check now" button asks for it (through the mailbox below), for
 // checking whether a tracker entry's quoted source text still exists where
 // it's filed. chapterText() (used elsewhere for word counts) already
 // handles a chapter whether or not it's the one currently rendered —
@@ -626,43 +627,62 @@ setInterval(() => { sendManuscriptText(); }, 600000); // 10 minutes
 /*  tracker -> NEO                                                      */
 /* ================================================================== */
 
-// The reverse of sendManuscriptText: a pending "send it now" request from
-// the tracker's own "Check now" button, polled the same 1s cadence as
-// checkTrackerGoto just below (same reasoning — cheap enough to just
-// always be running).
-async function checkWantsManuscript() {
-  if (!trackerReadyUrl) return;
-  let body;
-  try { body = await (await fetch(trackerReadyUrl + '__request-manuscript-text')).json(); } catch { return; }
-  if (body && body.wants) sendManuscriptText();
+// The tracker's mail for NEO, read by one long-poll: /__neo-mailbox holds
+// its reply until something is there — a jump to a passage (a log row's
+// jump icon), a "send the manuscript now" (the tracker's Check now
+// button), the tracker page opening or closing a dialog (the drawer is
+// held open while one is up), or a write to the record (Refs repaint) —
+// or 20 s pass. One watcher, started when the dev server is up; a round
+// that comes straight back (an older server, a stub answering at once, a
+// failed fetch) waits a moment before the next, so this can't spin.
+let trackerMailWatch = null;
+let trackerMailVersion = null;
+async function watchTrackerMailbox() {
+  if (trackerMailWatch) return;
+  const watch = trackerMailWatch = new AbortController();
+  for (;;) {
+    if (watch.signal.aborted || !trackerReadyUrl) break;
+    const started = Date.now();
+    let mail;
+    try {
+      const after = trackerMailVersion === null ? '' : '&after=' + encodeURIComponent(trackerMailVersion);
+      mail = await (await fetch(trackerReadyUrl + '__neo-mailbox?wait=20000' + after, { signal: watch.signal })).json();
+    } catch { /* asked again below */ }
+    if (watch.signal.aborted) break;
+    if (mail && typeof mail.version === 'number') { trackerMailVersion = mail.version; handleTrackerMail(mail); }
+    if (Date.now() - started < 250) await new Promise((resolve) => setTimeout(resolve, mail ? 250 : 1000));
+  }
+  if (trackerMailWatch === watch) trackerMailWatch = null;
 }
-
-// Jumping to a log entry's spot in the manuscript: the reverse of the
-// pushes above — a log row's jump icon writes a pending request on the
-// tracker's dev server instead, for NEO to pick up. A no-op whenever the
-// pane hasn't been opened yet this session (trackerReadyUrl unset) or
-// there's nothing pending — cheap enough to just always be running, like
-// the dev server probe.
-setInterval(() => { checkTrackerGoto(); checkWantsManuscript(); }, 1000);
+// eslint-disable-next-line no-unused-vars -- the e2e harness stops the watcher between stubs
+function stopTrackerMailbox() {
+  if (trackerMailWatch) { trackerMailWatch.abort(); trackerMailWatch = null; }
+  trackerMailVersion = null;
+}
 
 // Whether the tracker page has a dialog open (it posts a heartbeat while
-// one is up). While it does, the drawer is held open: neither the cursor
-// leaving it nor a click in the manuscript closes it. Polled fast, and
-// only while the pane is showing the tracker, so the hold is in place
-// before the cursor can get from the dialog to the manuscript.
+// one is up, and the mailbox says so). While it does, and the pane is
+// showing the tracker, the drawer is held open: neither the cursor
+// leaving it nor a click in the manuscript closes it. The hold lapses on
+// its own (the server counts the lapse as mail; a local timer backs it).
 let trackerEditing = false;
-async function checkTrackerEditing() {
-  const pane = $('#side-pane');
-  if (!trackerReadyUrl || pane.dataset.mode !== 'tracker' || !pane.classList.contains('open')) {
-    trackerEditing = false;
-    return;
+let trackerEditingLapse = null;
+function handleTrackerMail(mail) {
+  const g = mail.goto;
+  if (g && typeof g.chapter === 'number') {
+    if (g.darling) jumpToTrackerDarling(g.darling, g.quote, g.occurrence);
+    else jumpToTrackerGoto(g.chapter, g.quote, g.occurrence, g.chapterId);
   }
-  try {
-    const body = await (await fetch(trackerReadyUrl + '__tracker-editing')).json();
-    trackerEditing = !!(body && body.editing);
-  } catch { trackerEditing = false; }
+  if (mail.wantsManuscript) sendManuscriptText();
+  const pane = $('#side-pane');
+  trackerEditing = !!mail.editing && pane.dataset.mode === 'tracker' && pane.classList.contains('open');
+  clearTimeout(trackerEditingLapse);
+  if (trackerEditing && typeof mail.editingUntil === 'number') {
+    trackerEditingLapse = setTimeout(() => { trackerEditing = false; }, Math.max(0, mail.editingUntil - Date.now()) + 100);
+  }
+  // a write to the record since Refs last read it: repaint
+  if (trackerRefsOn && typeof mail.writes === 'number' && mail.writes !== trackerRefsVersion) paintTrackerRefs('version');
 }
-setInterval(() => { checkTrackerEditing(); }, 250);
 
 // Escape while a tracker dialog is up closes it, and the (unpinned) drawer with it,
 // rather than sending the book back to the shelf (app.js's Escape): the
@@ -677,19 +697,9 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
   sendTrackerIntent('close', '');
-  trackerEditing = false; // let go of the drawer now, not at the next poll
+  trackerEditing = false; // let go of the drawer now, not at the next mail
   if (pane.dataset.pinned !== '1') closeSidePane();
 }, true);
-async function checkTrackerGoto() {
-  if (!trackerReadyUrl) return;
-  let body;
-  try { body = await (await fetch(trackerReadyUrl + '__tracker-goto')).json(); } catch { return; }
-  const g = body && body.goto;
-  if (!g || typeof g.chapter !== 'number') return;
-  if (g.darling) jumpToTrackerDarling(g.darling, g.quote, g.occurrence);
-  else jumpToTrackerGoto(g.chapter, g.quote, g.occurrence, g.chapterId);
-}
-
 // The reverse of storyIndex(): which chapter in the open book has this
 // number, if any.
 function chapterIdForNumber(n) {
@@ -1199,32 +1209,9 @@ function schedulePaintTrackerRefs() {
   trackerRefsPaintTimer = setTimeout(() => paintTrackerRefs('settle'), 800);
 }
 
-// The tracker's write counter, watched by a long-poll: /__version holds
-// its reply until the counter moves (or 20 s pass), so a reference added
-// from the drawer or the palette is tinted the moment it's saved. One
-// watcher at a time, stopped with Refs. A round that comes straight back
-// (an older server or a stub answering at once, a failed fetch) waits a
-// moment before the next, so this can't spin.
-let trackerRefsWatch = null;
-async function watchTrackerRefs() {
-  if (trackerRefsWatch) return;
-  const watch = trackerRefsWatch = new AbortController();
-  for (;;) {
-    if (watch.signal.aborted || !trackerRefsOn) break;
-    const started = Date.now();
-    let version;
-    if (trackerReadyUrl) {
-      try {
-        const after = trackerRefsVersion === null ? '' : '&after=' + encodeURIComponent(trackerRefsVersion);
-        version = (await (await fetch(trackerReadyUrl + '__version?wait=20000' + after, { signal: watch.signal })).json()).version;
-      } catch { /* asked again below */ }
-    }
-    if (watch.signal.aborted) break;
-    if (version !== undefined && version !== trackerRefsVersion) await paintTrackerRefs('version');
-    if (Date.now() - started < 250) await new Promise((resolve) => setTimeout(resolve, version === undefined ? 1000 : 250));
-  }
-  if (trackerRefsWatch === watch) trackerRefsWatch = null;
-}
+// A write to the record repaints Refs: the mailbox (watchTrackerMailbox)
+// carries the tracker's write counter, and paintTrackerRefs('version')
+// re-reads /__references when it moved.
 
 // `extra` the event passages too; left out, it stays as it was.
 async function setTrackerRefs(on, extra = trackerRefsExtra) {
@@ -1240,15 +1227,10 @@ async function setTrackerRefs(on, extra = trackerRefsExtra) {
     localStorage.setItem('neo-tracker-refs-extra', extra ? '1' : '0');
   } catch { /* not remembered */ }
   if (repaint) { paintTrackerRefs('settle'); return; } // the filter changed the chapters' keys
-  if (!on) {
-    if (trackerRefsWatch) { trackerRefsWatch.abort(); trackerRefsWatch = null; }
-    clearTrackerRefs();
-    return;
-  }
+  if (!on) { clearTrackerRefs(); return; }
   if (!trackerReadyUrl) await ensureTrackerPane(); // starts or finds the dev server; the pane stays closed
   if (!trackerReadyUrl) { toast(t("The tracker isn't available right now.")); return; }
   paintTrackerRefs('version');
-  watchTrackerRefs();
 }
 
 // Shift (with the click or Alt+D) switches the extra layer, turning Refs on

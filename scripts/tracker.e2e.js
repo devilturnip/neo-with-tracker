@@ -72,14 +72,16 @@ const withStub = async (routes, fn, state = {}) => {
       const reply = key === undefined ? undefined : typeof routes[key] === 'function' ? routes[key](url, init) : routes[key];
       return Promise.resolve(reply).then((r) => ({ ok: true, json: async () => (r === undefined ? {} : r) }));
     };
+    stopTrackerMailbox(); // a watcher on the real server (a hover started the tracker) would sit in its long-poll
     trackerReadyUrl = 'http://stub/';
+    watchTrackerMailbox(); // as ensureTrackerPane would, with the real server
     return 0;
   })()`);
   try { return await fn(); } finally { await unstub(); }
 };
 const unstub = () => js(`(() => {
   const s = window.__stub; if (!s) return 0;
-  window.fetch = s.prev.fetch; trackerReadyUrl = s.prev.url; delete window.__stub; return 0;
+  stopTrackerMailbox(); window.fetch = s.prev.fetch; trackerReadyUrl = s.prev.url; delete window.__stub; return 0;
 })()`);
 /** The stub's calls whose url has `part`, as {url, body}. */
 const calls = (part) => js(`window.__stub.calls.filter((c) => c.url.includes(${JSON.stringify(part)}))`);
@@ -87,10 +89,11 @@ const clearCalls = () => js(`window.__stub.calls = []; 0`);
 /** The intents posted so far, as their query strings. */
 const intents = async () => (await calls('__neo-intent')).map((c) => decodeURIComponent(c.url.split('?')[1]));
 const setStub = (patch) => js(`Object.assign(window.__stub.state, ${JSON.stringify(patch)}); 0`);
-/** Refs from the stub: one chapter's list, `/__version` standing still. */
+/** Refs from the stub: one chapter's list, the mailbox with nothing new. */
+const mailbox = (extra = '') => `'__neo-mailbox': () => ({ version: 1, writes: 1, goto: null, wantsManuscript: false, editing: false${extra} })`;
 const refsStub = (refs) => `{
   '__references': () => ({ version: Math.random(), byChapter: { 1: ${JSON.stringify(refs)} } }),
-  '__version': { version: 1 },
+  ${mailbox()},
 }`;
 
 const paneState = () => js(`(() => {
@@ -140,7 +143,7 @@ const test = (name, fn) => tests.push({ name, fn });
 // stub a test leaked is taken down, the palette and pane closed, Refs
 // off, nothing selected, no pending debounces or sent-text memory.
 const reset = () => js(`(() => {
-  if (window.__stub) { window.fetch = window.__stub.prev.fetch; trackerReadyUrl = window.__stub.prev.url; delete window.__stub; }
+  if (window.__stub) { stopTrackerMailbox(); window.fetch = window.__stub.prev.fetch; trackerReadyUrl = window.__stub.prev.url; delete window.__stub; }
   if (palette) closePalette(false);
   setTrackerRefs(false, false); localStorage.setItem('neo-tracker-refs-extra', '0');
   closeSidePane(); document.getElementById('side-pane').classList.remove('open');
@@ -289,9 +292,9 @@ test('after an unseen exit, a click elsewhere still closes the pane', async () =
 });
 
 test('while a tracker dialog is open, neither leaving the pane nor a click outside closes it', async () => {
-  await withStub(`{ '__tracker-editing': () => ({ editing: window.__stub.state.editing }) }`, async () => {
+  await withStub(`{ ${mailbox(', editing: window.__stub.state.editing')} }`, async () => {
     await openPane();
-    await waitFor(`trackerEditing === true`); // a poll of /__tracker-editing
+    await waitFor(`trackerEditing === true`); // the mailbox said so
     await exitPane();
     assert.equal((await paneState()).open, true, 'held through the cursor leaving');
     await clickOutside();
@@ -348,7 +351,7 @@ test('Refs tints referenced passages, names them on hover, and Alt+D turns it of
 test('Refs follow a tracker write on their own, and a typing pause re-reads nothing', async () => {
   await withStub(`{
     '__references': () => { window.__stub.state.refFetches += 1; return { version: window.__stub.state.version, byChapter: { 1: window.__stub.state.refs } }; },
-    '__version': () => ({ version: window.__stub.state.version }),
+    '__neo-mailbox': () => ({ version: window.__stub.state.version, writes: window.__stub.state.version, goto: null, wantsManuscript: false, editing: false }),
   }`, async () => {
     await js(`setTrackerRefs(true); 0`);
     await tick(300);
@@ -388,7 +391,7 @@ test('Alt+Shift+D adds the event passages, in their own highlight', async () => 
 test('a passage in a darling is tinted on the Darlings tab, from byDarling', async () => {
   await withStub(`{
     '__references': () => ({ version: Math.random(), byChapter: {}, byDarling: { 'd-test': [{ passage: 'p-1-1', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'kept words' }] } }),
-    '__version': { version: 1 },
+    ${mailbox()},
   }`, async () => {
     await js(`(() => {
       const list = document.getElementById('darlings-list');
@@ -516,6 +519,24 @@ test('every push names the chapter by NEO\'s id and carries the book\'s chapter 
   });
 });
 
+test('a jump and a "send the manuscript" arrive through the mailbox; nothing polls on an interval', async () => {
+  await withStub(`{
+    '__neo-mailbox': () => {
+      const mail = window.__stub.state.mail.shift() || { goto: null, wantsManuscript: false };
+      return new Promise((resolve) => setTimeout(() => resolve({ version: ++window.__stub.state.n, writes: 1, editing: false, ...mail }), 20));
+    },
+  }`, async () => {
+    const chId = await chapterId();
+    await js(`window.__stub.state.mail.push({ goto: { chapter: 1, chapterId: ${JSON.stringify(chId)}, quote: 'Hello' } }, { wantsManuscript: true }); 0`);
+    await waitFor(`CSS.highlights.has('neo-tracker-jump')`, 3000);
+    await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
+    assert.equal((await calls('__tracker-goto')).length, 0, 'no goto poll');
+    assert.equal((await calls('__request-manuscript-text')).length, 0, 'no wants poll');
+    assert.equal((await calls('__tracker-editing')).length, 0, 'no editing poll');
+    assert.equal((await calls('__version')).length, 0, 'no version watch');
+  }, { mail: [], n: 1 });
+});
+
 test('a section that is not a story chapter never posts as one', async () => {
   await withStub(`{}`, async () => {
     await js(`(() => {
@@ -539,9 +560,9 @@ test('a section that is not a story chapter never posts as one', async () => {
 /* ================================================================== */
 
 test('Escape with a tracker dialog up closes it and the drawer; the book stays open', async () => {
-  await withStub(`{ '__tracker-editing': () => ({ editing: window.__stub.state.editing }) }`, async () => {
+  await withStub(`{ ${mailbox(', editing: window.__stub.state.editing')} }`, async () => {
     await js(`const pane = document.getElementById('side-pane'); pane.dataset.mode = 'tracker'; pane.classList.add('open'); 0`);
-    await waitFor(`trackerEditing === true`); // a poll of /__tracker-editing
+    await waitFor(`trackerEditing === true`); // the mailbox said so
     const esc = () => js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }))`);
     assert.equal(await esc(), false, 'claimed: app.js never saw it');
     await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-intent'))`);
