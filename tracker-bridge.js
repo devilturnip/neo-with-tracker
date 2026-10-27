@@ -401,8 +401,23 @@ function caretPlace() {
   const mark = document.createTextNode('\u0000');
   if (at.nodeType === Node.TEXT_NODE) { at.splitText(range.startOffset); at.after(mark); } else at.insertBefore(mark, at.childNodes[range.startOffset] || null);
   clone.querySelectorAll(UNCOUNTED).forEach((n) => n.remove());
-  const offset = plainText(clone).indexOf('\u0000');
-  return offset === -1 ? null : { chapter: chapterNumber(chapter.dataset.id), offset };
+  const marked = plainText(clone);
+  const offset = marked.indexOf('\u0000');
+  if (offset === -1) return null;
+  return { chapter: chapterNumber(chapter.dataset.id), offset, text: marked.slice(0, offset) + marked.slice(offset + 1) };
+}
+
+// The text of each chapter as the tracker last got it, so the cursor's
+// chapter is sent again only once it's been typed in: an offset counted in
+// today's text, placed in a copy from minutes ago, lands in the wrong spot.
+const trackerSentText = new Map(); // chapter number -> text
+async function sendChapterTextIfChanged(number, text) {
+  if (trackerSentText.get(number) === text) return;
+  trackerSentText.set(number, text);
+  await fetch(trackerReadyUrl + '__neo-manuscript-text', {
+    method: 'POST',
+    body: JSON.stringify({ partial: true, chapters: [{ number, text }] }),
+  }).catch(() => {});
 }
 
 let trackerNotifiedSelection = null;
@@ -430,7 +445,9 @@ function notifyTrackerOfSelection() {
     if (occurrence && occurrence > 1) params.push('occurrence=' + occurrence);
     if (caret) params.push('chapter=' + caret.chapter, 'caret=' + caret.offset);
     const qs = params.length ? '?' + params.join('&') : '';
-    fetch(trackerReadyUrl + '__neo-selection' + qs, { method: 'POST', body: text }).catch(() => {});
+    const post = () => fetch(trackerReadyUrl + '__neo-selection' + qs, { method: 'POST', body: text }).catch(() => {});
+    if (caret) sendChapterTextIfChanged(caret.chapter, caret.text).then(post);
+    else post();
   }, 120);
 }
 document.addEventListener('selectionchange', notifyTrackerOfSelection);
@@ -486,6 +503,7 @@ async function sendManuscriptText() {
     number: chapterNumber(chId),
     text: chapterText(chId),
   }));
+  for (const { number, text } of chapters) trackerSentText.set(number, text);
   await fetch(trackerReadyUrl + '__neo-manuscript-text', {
     method: 'POST',
     body: JSON.stringify({ chapters }),
