@@ -420,17 +420,43 @@ function caretPlace() {
   return { chapter: chapterNumber(chapter.dataset.id), offset, ...(end === undefined ? {} : { end }), text };
 }
 
+// NEO's darlings as the tracker takes them: a passage cut from the
+// manuscript lives on in one, and the tracker follows it there.
+function trackerDarlings() {
+  return darlings.map((d) => ({
+    id: d.id, chapter: d.chapterId && book ? chapterNumber(d.chapterId) : null,
+    text: d.text, date: d.date,
+  }));
+}
+
 // The text of each chapter as the tracker last got it, so the cursor's
 // chapter is sent again only once it's been typed in: an offset counted in
 // today's text, placed in a copy from minutes ago, lands in the wrong spot.
+// The darlings ride along, and go on their own when only they changed.
 const trackerSentText = new Map(); // chapter number -> text
+let trackerSentDarlings = null;
 async function sendChapterTextIfChanged(number, text) {
-  if (trackerSentText.get(number) === text) return;
+  const list = trackerDarlings();
+  const sig = JSON.stringify(list);
+  const sameText = trackerSentText.get(number) === text;
+  if (sameText && sig === trackerSentDarlings) return;
   trackerSentText.set(number, text);
+  trackerSentDarlings = sig;
   await fetch(trackerReadyUrl + '__neo-manuscript-text', {
     method: 'POST',
-    body: JSON.stringify({ partial: true, chapters: [{ number, text }] }),
+    body: JSON.stringify({ partial: true, chapters: sameText ? [] : [{ number, text }], darlings: list }),
   }).catch(() => {});
+}
+// After a cut, a restore or a delete: the chapter's text and the darlings,
+// once things settle (restoring puts text back with no selection change).
+let trackerSettleTimer = null;
+function sendCurrentChapterSoon() {
+  if (!trackerReadyUrl || !book) return;
+  clearTimeout(trackerSettleTimer);
+  trackerSettleTimer = setTimeout(() => {
+    const chId = currentChapterId || book.chapterOrder[0];
+    if (chId) sendChapterTextIfChanged(chapterNumber(chId), chapterText(chId));
+  }, 300);
 }
 
 let trackerNotifiedSelection = null;
@@ -518,9 +544,11 @@ async function sendManuscriptText() {
     text: chapterText(chId),
   }));
   for (const { number, text } of chapters) trackerSentText.set(number, text);
+  const list = trackerDarlings();
+  trackerSentDarlings = JSON.stringify(list);
   await fetch(trackerReadyUrl + '__neo-manuscript-text', {
     method: 'POST',
-    body: JSON.stringify({ chapters }),
+    body: JSON.stringify({ chapters, darlings: list }),
   }).catch(() => {});
 }
 setInterval(() => { sendManuscriptText(); }, 600000); // 10 minutes
@@ -589,7 +617,8 @@ async function checkTrackerGoto() {
   try { body = await (await fetch(trackerReadyUrl + '__tracker-goto')).json(); } catch { return; }
   const g = body && body.goto;
   if (!g || typeof g.chapter !== 'number') return;
-  jumpToTrackerGoto(g.chapter, g.quote, g.occurrence);
+  if (g.darling) jumpToTrackerDarling(g.darling, g.quote, g.occurrence);
+  else jumpToTrackerGoto(g.chapter, g.quote, g.occurrence);
 }
 
 // The reverse of chapterNumber() (app.js): which chapter in the open book
@@ -666,6 +695,22 @@ function jumpToTrackerGoto(n, quote, occurrence) {
   // Highlight API Find & Replace already uses, rather than the real
   // selection, so this doesn't steal focus/caret from goToChapterTop above
   if (window.Highlight && window.CSS && CSS.highlights) {
+    clearTimeout(trackerJumpHighlightTimer);
+    CSS.highlights.set('neo-tracker-jump', new Highlight(range));
+    trackerJumpHighlightTimer = setTimeout(() => CSS.highlights.delete('neo-tracker-jump'), 2500);
+  }
+}
+
+// A passage the tracker says is in a darling: the Darlings tab, the
+// darling scrolled into view, the words flashed the same way.
+function jumpToTrackerDarling(did, quote, occurrence) {
+  switchTab('darlings');
+  const el = document.querySelector(`#darlings-list .darling[data-did="${did}"]`);
+  if (!el) { toast(t("That darling isn't here any more.")); return; }
+  const body = el.querySelector('.darling-text');
+  const range = quote && body ? quoteRange(body, quote, occurrence) : null;
+  (range ? range.startContainer.parentElement?.closest?.('p') || el : el).scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
+  if (range && window.Highlight && window.CSS && CSS.highlights) {
     clearTimeout(trackerJumpHighlightTimer);
     CSS.highlights.set('neo-tracker-jump', new Highlight(range));
     trackerJumpHighlightTimer = setTimeout(() => CSS.highlights.delete('neo-tracker-jump'), 2500);
@@ -1044,15 +1089,21 @@ function paintTrackerRefs(reason) {
     }
     const retyped = reason === 'settle' ? caretChapterId() : null;
     const next = new Map();
-    for (const chapter of document.querySelectorAll('.chapter[data-id]')) {
-      const id = chapter.dataset.id;
-      const body = chapter.querySelector('.chapter-body');
-      const refs = (trackerRefsReply.byChapter[chapterNumber(id)] || []).filter((r) => trackerRefsExtra || !r.extra);
-      if (!body || !refs.length) continue;
+    const paint = (id, body, refs) => {
+      if (!body || !refs.length) return;
       const key = JSON.stringify(refs);
       const had = trackerRefsChapters.get(id);
       const kept = had && had.body === body && had.key === key && id !== retyped;
       next.set(id, kept ? had : { body, key, entries: findTrackerRefs(body, refs) });
+    };
+    for (const chapter of document.querySelectorAll('.chapter[data-id]')) {
+      const id = chapter.dataset.id;
+      paint(id, chapter.querySelector('.chapter-body'), (trackerRefsReply.byChapter[chapterNumber(id)] || []).filter((r) => trackerRefsExtra || !r.extra));
+    }
+    // passages cut into darlings, tinted on the Darlings tab
+    for (const el of document.querySelectorAll('#darlings-list .darling[data-did]')) {
+      const did = el.dataset.did;
+      paint('darling:' + did, el.querySelector('.darling-text'), ((trackerRefsReply.byDarling || {})[did] || []).filter((r) => trackerRefsExtra || !r.extra));
     }
     trackerRefsChapters = next;
     trackerRefsPainted = [...next.values()].flatMap((c) => c.entries);
@@ -1185,7 +1236,7 @@ function caretAt(x, y) {
 // shared by the hover label and the Ctrl+click.
 function trackerRefsAt(x, y, target) {
   if (!trackerRefsOn || !trackerRefsPainted.length) return [];
-  if (!target || !target.closest || !target.closest('.chapter-body')) return [];
+  if (!target || !target.closest || !(target.closest('.chapter-body') || target.closest('#darlings-list .darling-text'))) return [];
   const caret = caretAt(x, y);
   if (!caret) return [];
   const found = [];
@@ -1278,8 +1329,8 @@ window.neoHooks = {
   },
   // renderDarlings(): one darling's element was just built — mark its text
   // so a right-click in it counts as manuscript for the New entry gesture
-  darlingRendered: (el, content, d) => { el.dataset.did = d.id; content.classList.add('darling-text'); },
+  darlingRendered: (el, content, d) => { el.dataset.did = d.id; content.classList.add('darling-text'); sendCurrentChapterSoon(); schedulePaintTrackerRefs(); },
   // updateCounters(): the word counts were refreshed — both notifiers
   // debounce themselves, so this is cheap to call every time
-  countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); schedulePaintTrackerRefs(); },
+  countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); schedulePaintTrackerRefs(); sendCurrentChapterSoon(); },
 };

@@ -390,6 +390,25 @@ test('Escape with a tracker dialog up closes it and the drawer; the book stays o
   await js(`document.getElementById('side-pane').classList.remove('open'); window.fetch = window.__realFetch6; trackerReadyUrl = window.__prevUrl6; 0`);
 });
 
+test('a passage in a darling is tinted on the Darlings tab, from byDarling', async () => {
+  await js(`
+    window.__prevUrl8 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch8 = window.fetch;
+    window.fetch = (u) => {
+      const url = String(u);
+      if (url.includes('__references')) return Promise.resolve({ ok: true, json: async () => ({ version: Math.random(), byChapter: {}, byDarling: { 'd-test': [{ passage: 'p-1-1', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'kept words' }] } }) });
+      return Promise.resolve({ ok: true, json: async () => ({ version: 1 }) });
+    };
+    const list = document.getElementById('darlings-list');
+    const el = document.createElement('div'); el.className = 'darling'; el.dataset.did = 'd-test';
+    const content = document.createElement('div'); content.className = 'darling-text'; content.innerHTML = '<p>Some kept words here.</p>';
+    el.appendChild(content); list.appendChild(el); 0`);
+  await js(`setTrackerRefs(true); 0`);
+  await tick(400);
+  assert.equal(await js(`CSS.highlights.get('neo-tracker-refs')?.size ?? 0`), 1, 'the darling passage is tinted');
+  await js(`setTrackerRefs(false); document.querySelector('#darlings-list .darling[data-did="d-test"]').remove(); window.fetch = window.__realFetch8; trackerReadyUrl = window.__prevUrl8; 0`);
+});
+
 test('Ctrl+click a tinted passage opens its entity in the drawer', async () => {
   await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
   await stubRefs([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]);
