@@ -331,6 +331,30 @@ test('Alt+Shift+D adds the event passages, in their own highlight', async () => 
   await js(`setTrackerRefs(false); localStorage.setItem('neo-tracker-refs-extra', '0'); window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
 
+test('a caret in the manuscript is posted with its chapter and offset, measured as chapterText is', async () => {
+  await js(`
+    window.__prevUrl7 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch7 = window.fetch; window.__posts = [];
+    window.fetch = (u, init) => { const url = String(u); if (url.includes('__neo-selection')) window.__posts.push(url.split('__neo-selection')[1] + ' ' + (init && init.body)); return Promise.resolve({ ok: true, json: async () => ({}) }); };
+    trackerNotifiedSelection = null; 0`);
+  // the caret after "Hel", collapsed
+  await js(`(() => {
+    const body = document.querySelector('.chapter-body');
+    const node = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode();
+    const range = document.createRange(); range.setStart(node, 3); range.collapse(true);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); return 0;
+  })()`);
+  await tick(400);
+  const expected = await js(`chapterText(document.querySelector('.chapter[data-id]').dataset.id).indexOf('lo')`);
+  assert.deepEqual(await js(`window.__posts`), ['?chapter=1&caret=' + expected + ' ']);
+  // the same spot again isn't reposted; a selection from it carries the caret too
+  await js(`trackerNotifiedSelection = null; 0`);
+  await selectHello();
+  await tick(400);
+  assert.equal((await js(`window.__posts`)).at(-1), '?chapter=1&caret=0 Hello');
+  await js(`getSelection().removeAllRanges(); window.fetch = window.__realFetch7; trackerReadyUrl = window.__prevUrl7; 0`);
+});
+
 test('Escape with a tracker dialog up closes it and the drawer; the book stays open', async () => {
   await js(`
     window.__prevUrl6 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';

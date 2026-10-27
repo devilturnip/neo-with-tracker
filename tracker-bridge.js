@@ -378,6 +378,33 @@ function selectionInfo() {
   return { body, text, occurrence, range: range.cloneRange() };
 }
 
+// Where the cursor is, for the tracker's screens to show the chapter as of
+// there: the chapter, and the caret's offset into chapterText(id) — the text
+// the tracker holds, which strips what UNCOUNTED names and puts a newline
+// after each paragraph (app.js). Measured by marking the spot in a clone
+// and reading it the way chapterText does. Null outside a chapter body, or
+// inside something stripped.
+function caretPlace() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  const start = range.startContainer;
+  const el = start.nodeType === Node.TEXT_NODE ? start.parentElement : start;
+  const body = el && el.closest ? el.closest('.chapter-body') : null;
+  const chapter = body && body.closest('.chapter[data-id]');
+  if (!body || !chapter) return null;
+  const path = [];
+  for (let n = start; n !== body; n = n.parentNode) path.unshift(Array.prototype.indexOf.call(n.parentNode.childNodes, n));
+  const clone = body.cloneNode(true);
+  let at = clone;
+  for (const i of path) at = at.childNodes[i];
+  const mark = document.createTextNode('\u0000');
+  if (at.nodeType === Node.TEXT_NODE) { at.splitText(range.startOffset); at.after(mark); } else at.insertBefore(mark, at.childNodes[range.startOffset] || null);
+  clone.querySelectorAll(UNCOUNTED).forEach((n) => n.remove());
+  const offset = plainText(clone).indexOf('\u0000');
+  return offset === -1 ? null : { chapter: chapterNumber(chapter.dataset.id), offset };
+}
+
 let trackerNotifiedSelection = null;
 let trackerNotifySelectionTimer = null;
 function notifyTrackerOfSelection() {
@@ -385,20 +412,26 @@ function notifyTrackerOfSelection() {
   // The palette's own input holds the selection while it's up; the
   // manuscript's is coming back the moment it closes.
   if (palette) return;
+  // 120 ms: a drag's changes come milliseconds apart and still coalesce;
+  // a click reaches the tracker's screens almost at once.
   clearTimeout(trackerNotifySelectionTimer);
   trackerNotifySelectionTimer = setTimeout(() => {
     const info = selectionInfo();
     const text = info ? info.text : '';
     const occurrence = info ? info.occurrence : null;
-    // Keyed on text+occurrence together, not text alone — otherwise
-    // selecting the second "Cheshire" right after the first would look
-    // unchanged and never get reposted.
-    const key = text + ':' + (occurrence || '');
+    const caret = caretPlace();
+    // Keyed on text, occurrence and cursor together, not text alone —
+    // otherwise selecting the second "Cheshire" right after the first would
+    // look unchanged and never get reposted.
+    const key = text + ':' + (occurrence || '') + ':' + (caret ? caret.chapter + ':' + caret.offset : '');
     if (key === trackerNotifiedSelection) return;
     trackerNotifiedSelection = key;
-    const qs = occurrence && occurrence > 1 ? '?occurrence=' + occurrence : '';
+    const params = [];
+    if (occurrence && occurrence > 1) params.push('occurrence=' + occurrence);
+    if (caret) params.push('chapter=' + caret.chapter, 'caret=' + caret.offset);
+    const qs = params.length ? '?' + params.join('&') : '';
     fetch(trackerReadyUrl + '__neo-selection' + qs, { method: 'POST', body: text }).catch(() => {});
-  }, 300);
+  }, 120);
 }
 document.addEventListener('selectionchange', notifyTrackerOfSelection);
 
