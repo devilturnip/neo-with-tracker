@@ -588,6 +588,9 @@ function notifyTrackerOfNewChapter(chId) {
     trackerFlowActive = true;
     await openTrackerPane();
     if (!trackerReadyUrl) { trackerFlowActive = false; return; } // tracker not available — nothing to do
+    // The book's new order first, so the tracker has renumbered around
+    // the new chapter before its dialog asks for that number.
+    await sendManuscriptText();
     await sendTrackerIntent('chapter-create', String(storyIndex(chId)), { chapterId: chId });
   })();
 }
