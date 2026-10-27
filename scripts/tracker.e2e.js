@@ -91,8 +91,10 @@ const intents = async () => (await calls('__neo-intent')).map((c) => decodeURICo
 const setStub = (patch) => js(`Object.assign(window.__stub.state, ${JSON.stringify(patch)}); 0`);
 /** Refs from the stub: one chapter's list, the mailbox with nothing new. */
 const mailbox = (extra = '') => `'__neo-mailbox': () => ({ version: 1, writes: 1, goto: null, wantsManuscript: false, editing: false${extra} })`;
+// the references carry the same write counter the mailbox reports, as the
+// real server's do, so an unchanged counter never repaints
 const refsStub = (refs) => `{
-  '__references': () => ({ version: Math.random(), byChapter: { 1: ${JSON.stringify(refs)} } }),
+  '__references': () => ({ version: 1, byChapter: { 1: ${JSON.stringify(refs)} } }),
   ${mailbox()},
 }`;
 
@@ -149,8 +151,10 @@ const reset = () => js(`(() => {
   closeSidePane(); document.getElementById('side-pane').classList.remove('open');
   getSelection().removeAllRanges();
   trackerFlowActive = false; trackerEditing = false; trackerNotifiedSelection = null;
-  trackerSentText.clear(); trackerSentDarlings = null;
-  clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); return 0;
+  trackerNotifiedChapter = null; trackerNotifiedWords = null; trackerRefsVersion = null; trackerRefsReply = null;
+  trackerSentText.clear(); trackerSentDarlings = null; trackerSentOrder = null; trackerMeasured.clear();
+  clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); clearTimeout(trackerEditingLapse);
+  clearTimeout(trackerNotifyTimer); clearTimeout(trackerNotifyWordsTimer); return 0;
 })()`);
 
 /* ================================================================== */
@@ -390,7 +394,7 @@ test('Alt+Shift+D adds the event passages, in their own highlight', async () => 
 
 test('a passage in a darling is tinted on the Darlings tab, from byDarling', async () => {
   await withStub(`{
-    '__references': () => ({ version: Math.random(), byChapter: {}, byDarling: { 'd-test': [{ passage: 'p-1-1', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'kept words' }] } }),
+    '__references': () => ({ version: 1, byChapter: {}, byDarling: { 'd-test': [{ passage: 'p-1-1', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'kept words' }] } }),
     ${mailbox()},
   }`, async () => {
     await js(`(() => {
@@ -527,7 +531,7 @@ test('a jump and a "send the manuscript" arrive through the mailbox; nothing pol
     },
   }`, async () => {
     const chId = await chapterId();
-    await js(`window.__stub.state.mail.push({ goto: { chapter: 1, chapterId: ${JSON.stringify(chId)}, quote: 'Hello' } }, { wantsManuscript: true }); 0`);
+    await js(`window.__stub.state.mail.push({ goto: { chapter: 99, chapterId: ${JSON.stringify(chId)}, quote: 'Hello' } }, { wantsManuscript: true }); 0`);
     await waitFor(`CSS.highlights.has('neo-tracker-jump')`, 3000);
     await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
     assert.equal((await calls('__tracker-goto')).length, 0, 'no goto poll');
@@ -535,6 +539,29 @@ test('a jump and a "send the manuscript" arrive through the mailbox; nothing pol
     assert.equal((await calls('__tracker-editing')).length, 0, 'no editing poll');
     assert.equal((await calls('__version')).length, 0, 'no version watch');
   }, { mail: [], n: 1 });
+});
+
+test('the book\'s order changing with no typing is pushed on its own', async () => {
+  await withStub(`{}`, async () => {
+    await selectHello();
+    await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
+    await clearCalls();
+    // nothing changed: a settle sends nothing
+    await js(`sendCurrentChapterSoon(); 0`);
+    await tick(500);
+    assert.equal((await calls('__neo-manuscript-text')).length, 0, 'an unchanged order is not re-sent');
+    // a second chapter joins the book (the order changes, no text typed)
+    await js(`book.chapterOrder.push('ch-test-extra'); book.chapterKinds = book.chapterKinds || {}; 0`);
+    try {
+      await js(`sendCurrentChapterSoon(); 0`);
+      await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
+      const body = JSON.parse((await calls('__neo-manuscript-text'))[0].body);
+      assert.equal(body.order.length, 2, 'the new order went');
+      assert.deepEqual(body.chapters, [], 'with no text, since none changed');
+    } finally {
+      await js(`book.chapterOrder = book.chapterOrder.filter((id) => id !== 'ch-test-extra'); 0`);
+    }
+  });
 });
 
 test('a section that is not a story chapter never posts as one', async () => {

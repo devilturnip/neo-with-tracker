@@ -298,11 +298,11 @@ function notifyTrackerOfChapter(immediate) {
   if (!trackerReadyUrl || !currentChapterId || !book) return;
   clearTimeout(trackerNotifyTimer);
   const go = () => {
+    if (orderChanged()) sendCurrentChapterSoon(); // a reorder or delete shows on the next chapter switch
     if (!isStoryChapter(currentChapterId)) return;
-    const n = storyIndex(currentChapterId);
-    if (n === trackerNotifiedChapter) return;
-    trackerNotifiedChapter = n;
-    trackerPost('__neo-chapter?n=' + n + '&id=' + encodeURIComponent(currentChapterId));
+    if (currentChapterId === trackerNotifiedChapter) return;
+    trackerNotifiedChapter = currentChapterId;
+    trackerPost('__neo-chapter?n=' + storyIndex(currentChapterId) + '&id=' + encodeURIComponent(currentChapterId));
   };
   if (immediate) go();
   else trackerNotifyTimer = setTimeout(go, 400);
@@ -472,15 +472,22 @@ function trackerDarlings() {
 // The darlings ride along, and go on their own when only they changed.
 const trackerSentText = new Map(); // chapter id -> text
 let trackerSentDarlings = null;
+// The order as last sent: a chapter reordered, deleted or set aside with
+// no typing anywhere still has to reach the tracker, so the order counts
+// as a change of its own.
+let trackerSentOrder = null;
+const orderChanged = () => JSON.stringify(trackerOrder()) !== trackerSentOrder;
 async function sendChapterTextIfChanged(chId, text) {
   const list = trackerDarlings();
   const sig = JSON.stringify(list);
-  const sameText = trackerSentText.get(chId) === text;
+  const order = trackerOrder();
+  const sameText = chId === null || trackerSentText.get(chId) === text;
   const sameDarlings = sig === trackerSentDarlings;
-  if (sameText && sameDarlings) return;
+  const sameOrder = JSON.stringify(order) === trackerSentOrder;
+  if (sameText && sameDarlings && sameOrder) return;
   const reply = await trackerPost('__neo-manuscript-text', {
     body: JSON.stringify({
-      partial: true, order: trackerOrder(),
+      partial: true, order,
       chapters: sameText ? [] : [{ id: chId, number: storyIndex(chId), text }],
       ...(sameDarlings ? {} : { darlings: list }),
     }),
@@ -488,6 +495,7 @@ async function sendChapterTextIfChanged(chId, text) {
   if (!reply) return; // not sent: tried again on the next change
   if (!sameText) trackerSentText.set(chId, text);
   if (!sameDarlings) trackerSentDarlings = sig;
+  trackerSentOrder = JSON.stringify(order);
 }
 // After a cut, a restore or a delete: the chapter's text and the darlings,
 // once things settle (restoring puts text back with no selection change).
@@ -506,9 +514,12 @@ function sendCurrentChapterSoon() {
   clearTimeout(trackerSettleTimer);
   trackerSettleTimer = setTimeout(() => {
     const chId = currentChapterId || book.chapterOrder[0];
-    if (!chId || !isStoryChapter(chId)) return;
+    if (!chId) return;
+    // a section that isn't a story chapter has no text to send, but the
+    // order may still have changed under it
+    if (!isStoryChapter(chId)) { if (orderChanged()) sendChapterTextIfChanged(null, ''); return; }
     const text = chapterTextIfChanged(chId);
-    if (text !== null || trackerSentDarlings !== JSON.stringify(trackerDarlings())) {
+    if (text !== null || trackerSentDarlings !== JSON.stringify(trackerDarlings()) || orderChanged()) {
       sendChapterTextIfChanged(chId, text ?? trackerSentText.get(chId) ?? chapterText(chId));
     }
   }, 300);
@@ -618,11 +629,13 @@ async function sendManuscriptText() {
   }
   const list = trackerDarlings();
   const sig = JSON.stringify(list);
-  if (chapters.length === 0 && sig === trackerSentDarlings) return;
-  const reply = await trackerPost('__neo-manuscript-text', { body: JSON.stringify({ partial: true, order: trackerOrder(), chapters, darlings: list }) });
+  const order = trackerOrder();
+  if (chapters.length === 0 && sig === trackerSentDarlings && JSON.stringify(order) === trackerSentOrder) return;
+  const reply = await trackerPost('__neo-manuscript-text', { body: JSON.stringify({ partial: true, order, chapters, darlings: list }) });
   if (!reply) return;
   for (const { id, text } of chapters) trackerSentText.set(id, text);
   trackerSentDarlings = sig;
+  trackerSentOrder = JSON.stringify(order);
 }
 setInterval(() => { sendManuscriptText(); }, 600000); // 10 minutes
 
@@ -649,7 +662,8 @@ async function watchTrackerMailbox() {
     let mail;
     try {
       const after = trackerMailVersion === null ? '' : '&after=' + encodeURIComponent(trackerMailVersion);
-      mail = await (await fetch(trackerReadyUrl + '__neo-mailbox?wait=20000' + after, { signal: watch.signal })).json();
+      const reply = await fetch(trackerReadyUrl + '__neo-mailbox?wait=20000' + after, { signal: watch.signal });
+      if (reply.ok) mail = await reply.json();
     } catch { /* asked again below */ }
     if (watch.signal.aborted) break;
     if (mail && typeof mail.version === 'number') { trackerMailVersion = mail.version; handleTrackerMail(mail); }
@@ -756,7 +770,7 @@ function quoteRange(body, quote, occurrence, lowerText) {
 // By NEO's own id for the chapter when the tracker has it (the number can
 // name a different chapter by the time it's read), else by number.
 function jumpToTrackerGoto(n, quote, occurrence, chapterId) {
-  const chId = chapterId && book && book.chapterOrder.includes(chapterId) ? chapterId : chapterIdForNumber(n);
+  const chId = chapterId ? (book && book.chapterOrder.includes(chapterId) ? chapterId : null) : chapterIdForNumber(n);
   if (!chId) { toast(t("Chapter not found in the open manuscript.")); return; }
   // Used to close the pane here so the manuscript wasn't hidden behind it —
   // but a jump now often comes bundled with a properties dialog opening in
@@ -828,7 +842,7 @@ function selectedManuscriptText(target) {
 function selectionPlace() {
   const info = selectionInfo();
   const chapter = info && info.body.closest('.chapter[data-id]');
-  if (!chapter) return {};
+  if (!chapter || !isStoryChapter(chapter.dataset.id)) return {}; // a prologue or epilogue has no chapter to file in
   return { chapter: storyIndex(chapter.dataset.id), chapterId: chapter.dataset.id, occurrence: info.occurrence > 1 ? info.occurrence : null };
 }
 async function openNewEntry(text) {
@@ -1021,6 +1035,7 @@ async function choosePaletteHit(open) {
   // The chapter the selection sits in, not whichever one the caret was
   // last reported from — they can differ with two chapters on screen.
   const chId = saved.body.closest('.chapter')?.dataset.id || currentChapterId;
+  if (!chId || !isStoryChapter(chId)) { toast(t("Reference not added: the selection isn't in a story chapter.")); return; }
   const body = { target: hit.kind, id: hit.id, chapter: storyIndex(chId), chapterId: chId, quote: saved.text };
   if (saved.occurrence && saved.occurrence > 1) body.occurrence = saved.occurrence;
   let reply;
@@ -1182,7 +1197,8 @@ function paintTrackerRefs(reason) {
     };
     for (const chapter of document.querySelectorAll('.chapter[data-id]')) {
       const id = chapter.dataset.id;
-      const refs = (trackerRefsReply.byChapterId || {})[id] || trackerRefsReply.byChapter[storyIndex(id)] || [];
+      const byId = trackerRefsReply.byChapterId;
+      const refs = byId && Object.keys(byId).length ? (byId[id] || []) : (trackerRefsReply.byChapter[storyIndex(id)] || []);
       paint(id, chapter.querySelector('.chapter-body'), refs.filter((r) => trackerRefsExtra || !r.extra));
     }
     // passages cut into darlings, tinted on the Darlings tab
