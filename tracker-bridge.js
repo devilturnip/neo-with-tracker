@@ -501,6 +501,23 @@ async function checkTrackerEditing() {
   } catch { trackerEditing = false; }
 }
 setInterval(() => { checkTrackerEditing(); }, 250);
+
+// Escape while a tracker dialog is up closes it, and the (unpinned) drawer with it,
+// rather than sending the book back to the shelf (app.js's Escape): the
+// keyboard is usually still out in the manuscript, where the dialog was
+// opened from. Captured on window, ahead of app.js's handlers; NEO's own
+// Escape takers (its dialogs, the palette, a pop-menu) still come first.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const pane = $('#side-pane');
+  if (!trackerEditing || pane.dataset.mode !== 'tracker' || !pane.classList.contains('open')) return;
+  if (palette || document.querySelector('.modal-backdrop:not([hidden]), .pop-menu')) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  sendTrackerIntent('close', '');
+  trackerEditing = false; // let go of the drawer now, not at the next poll
+  if (pane.dataset.pinned !== '1') closeSidePane();
+}, true);
 async function checkTrackerGoto() {
   if (!trackerReadyUrl) return;
   let body;

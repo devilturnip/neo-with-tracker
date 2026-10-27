@@ -331,6 +331,41 @@ test('Alt+Shift+D adds the event passages, in their own highlight', async () => 
   await js(`setTrackerRefs(false); localStorage.setItem('neo-tracker-refs-extra', '0'); window.fetch = window.__realFetch4; trackerReadyUrl = window.__prevUrl4; delete window.__realFetch4; delete window.__prevUrl4; 0`);
 });
 
+test('Escape with a tracker dialog up closes it and the drawer; the book stays open', async () => {
+  await js(`
+    window.__prevUrl6 = trackerReadyUrl; trackerReadyUrl = 'http://stub/';
+    window.__realFetch6 = window.fetch;
+    window.__editing = true; window.__intents = [];
+    window.fetch = (u) => {
+      const url = String(u);
+      if (url.includes('__tracker-editing')) return Promise.resolve({ ok: true, json: async () => ({ editing: window.__editing }) });
+      if (url.includes('__neo-intent')) window.__intents.push(decodeURIComponent(url.split('?')[1]));
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    };
+    const pane = document.getElementById('side-pane'); pane.dataset.mode = 'tracker'; pane.classList.add('open'); 0`);
+  await tick(400); // a poll of /__tracker-editing
+  const esc = () => js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }))`);
+  assert.equal(await esc(), false, 'claimed: app.js never saw it');
+  await tick(100);
+  assert.deepEqual(await js(`window.__intents`), ['type=close&text=']);
+  assert.equal((await paneState()).open, false);
+  assert.equal(await js(`document.getElementById('editor-view').hidden`), false, 'still in the book');
+  // no dialog up: Escape is left to app.js
+  await js(`window.__editing = false; document.getElementById('side-pane').classList.add('open'); 0`);
+  await tick(400);
+  // peeked at just after the bridge's own capture listener, then kept from app.js
+  assert.equal(await js(`(() => {
+    let claimed = null;
+    const peek = (e) => { claimed = e.defaultPrevented; e.stopImmediatePropagation(); };
+    window.addEventListener('keydown', peek, true);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+    window.removeEventListener('keydown', peek, true);
+    return claimed;
+  })()`), false, 'not claimed: app.js has it');
+  assert.deepEqual(await js(`window.__intents`), ['type=close&text='], 'and nothing more sent');
+  await js(`document.getElementById('side-pane').classList.remove('open'); window.fetch = window.__realFetch6; trackerReadyUrl = window.__prevUrl6; 0`);
+});
+
 test('Ctrl+click a tinted passage opens its entity in the drawer', async () => {
   await js(`document.getElementById('back-to-shelf').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
   await stubRefs([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]);
