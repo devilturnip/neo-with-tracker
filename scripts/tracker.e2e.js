@@ -416,14 +416,12 @@ test('a passage in a darling is tinted on the Darlings tab, from byDarling', asy
 // Ctrl+click a tinted passage: one entity opens straight away, several ask
 // first. The intent post is recorded instead of made.
 test('Ctrl+click a tinted passage opens its entity in the drawer', async () => {
-  await withStub(refsStub([{ passage: 'p-hello001', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]), async () => {
+  await withStub(refsStub([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]), async () => {
     await js(`setTrackerRefs(true); 0`);
     await waitFor(`(CSS.highlights.get('neo-tracker-refs')?.size ?? 0) === 1`);
     assert.equal(await ctrlClickHello(), 'prevented', 'the click was claimed, so the caret stays put');
     await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-intent'))`);
-    // the passage and its chapter go along, for the tracker's log to point out
-    const chapterId = await js(`document.querySelector('.chapter-body').closest('.chapter[data-id]').dataset.id`);
-    assert.deepEqual(await intents(), [`type=open&text=item:hello&passage=p-hello001&chapterId=${chapterId}`]);
+    assert.deepEqual(await intents(), ['type=open&text=item:hello']);
     const state = await paneState();
     assert.equal(state.open, true);
     assert.equal(state.mode, 'tracker');
@@ -445,8 +443,7 @@ test('Ctrl+click a passage several entities reference asks which one', async () 
     assert.deepEqual(await js(`[...document.querySelectorAll('.pop-menu button')].map((b) => b.textContent)`), ['Hello Sword (item)', 'Greeter (character)']);
     await js(`[...document.querySelectorAll('.pop-menu button')][1].click()`);
     await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-intent'))`);
-    const chapterId = await js(`document.querySelector('.chapter-body').closest('.chapter[data-id]').dataset.id`);
-    assert.deepEqual(await intents(), [`type=open&text=character:greeter&chapterId=${chapterId}`]);
+    assert.deepEqual(await intents(), ['type=open&text=character:greeter']);
   });
 });
 
@@ -466,8 +463,7 @@ test('Ctrl+click a tinted passage while the drawer is already open keeps it open
       await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-intent'))`);
       assert.equal(await js(`window.__closes`), 0, 'the outside-click closer left the Ctrl+click alone');
       assert.equal((await paneState()).open, true);
-      const chapterId = await js(`document.querySelector('.chapter-body').closest('.chapter[data-id]').dataset.id`);
-      assert.deepEqual(await intents(), [`type=open&text=item:hello&chapterId=${chapterId}`]);
+      assert.deepEqual(await intents(), ['type=open&text=item:hello']);
     } finally {
       await js(`closeSidePane = window.__realClose; delete window.__realClose; 0`);
     }

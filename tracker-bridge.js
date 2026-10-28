@@ -1154,7 +1154,7 @@ function findTrackerRefs(body, refs) {
     const entry = byPassage.get(at) || { range, extra: true, entities: [] };
     if (!ref.extra) entry.extra = false;
     if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
-      entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label, passage: ref.passage });
+      entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label });
     }
     byPassage.set(at, entry);
   }
@@ -1340,12 +1340,10 @@ document.addEventListener('mousemove', (e) => {
 // tinted passage: its entity's property window in the tracker drawer — a
 // menu first when more than one thing references the passage. Caught on
 // mousedown, before NEO moves the caret, so the selection stays put.
-// The passage and its chapter go along, so the tracker can point out the
-// chapter log's rows made from it (null for a darling: no chapter).
-async function openTrackerEntity(entity, chapterId) {
+async function openTrackerEntity(entity) {
   trackerFlowActive = true; // keep the pane open until the cursor gets there
   await openTrackerPane();
-  if (trackerReadyUrl) await sendTrackerIntent('open', entity.kind + ':' + entity.id, { passage: entity.passage, chapterId });
+  if (trackerReadyUrl) await sendTrackerIntent('open', entity.kind + ':' + entity.id);
 }
 document.addEventListener('mousedown', async (e) => {
   if (e.button !== 0 || !(IS_MAC ? e.metaKey : e.ctrlKey) || e.altKey || e.shiftKey) return;
@@ -1354,13 +1352,11 @@ document.addEventListener('mousedown', async (e) => {
   e.preventDefault();
   e.stopPropagation();
   hideTrackerRefTip();
-  const chapter = e.target.closest && e.target.closest('.chapter[data-id]');
-  const chapterId = chapter ? chapter.dataset.id : null;
-  if (entities.length === 1) { openTrackerEntity(entities[0], chapterId); return; }
+  if (entities.length === 1) { openTrackerEntity(entities[0]); return; }
   const choice = await popMenu(e.clientX, e.clientY,
     entities.map((x, i) => ({ label: entityLine(x), value: String(i) })),
     { title: t('Open in the tracker') });
-  if (choice !== null && choice !== undefined && entities[Number(choice)]) openTrackerEntity(entities[Number(choice)], chapterId);
+  if (choice !== null && choice !== undefined && entities[Number(choice)]) openTrackerEntity(entities[Number(choice)]);
 }, true);
 document.addEventListener('scroll', hideTrackerRefTip, true);
 document.addEventListener('keydown', hideTrackerRefTip, true);
