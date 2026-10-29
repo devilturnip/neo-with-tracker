@@ -250,6 +250,7 @@ function ensureTrackerPane() {
     const body = $('#tracker-pane-body');
     if (!result.ok) {
       body.textContent = t('Tracker not available') + (result.reason === 'missing-repo' ? '' : ' (' + result.reason + ')');
+      if (result.reason === 'missing-repo' || result.reason === 'not-installed') trackerMissing = true;
       trackerPanePromise = null; // let the next hover try again
       return;
     }
@@ -344,7 +345,9 @@ function sendAllWordCounts(force = false) {
   if (!force && trackerCountsSentFor === book.id) return;
   trackerCountsSentFor = book.id;
   const counts = book.chapterOrder.filter(isStoryChapter).map((id) => ({ id, number: storyIndex(id), words: chapterWords(id) }));
-  trackerPost('__neo-wordcounts', { body: JSON.stringify({ counts }) }).then((reply) => { if (!reply) trackerCountsSentFor = null; });
+  // a failure isn't retried here (this runs on every keystroke): the link
+  // coming back sends them again, and so does a click on the dot
+  trackerPost('__neo-wordcounts', { body: JSON.stringify({ counts }) });
 }
 
 // The chapter body read as chapterText reads it — what UNCOUNTED names
@@ -367,17 +370,20 @@ function bodyTextModel(body) {
   };
   walk(body);
   const posOf = (node, offset) => { const seg = segments.find((x) => x.node === node); return seg ? seg.start + offset : -1; };
-  const rangeAt = (pos) => {
-    for (const seg of segments) {
+  // `side` at a boundary between two text nodes: a start belongs to the
+  // node after it, an end to the node before it (else a quote right after
+  // a marker would take the marker in).
+  const rangeAt = (pos, side = 'end') => {
+    const fits = (seg) => {
       const len = seg.node.textContent.length;
-      if (pos >= seg.start && pos <= seg.start + len) {
-        const r = document.createRange();
-        r.setStart(seg.node, pos - seg.start);
-        r.collapse(true);
-        return r;
-      }
-    }
-    return null;
+      return side === 'start' ? pos >= seg.start && pos < seg.start + len : pos > seg.start && pos <= seg.start + len;
+    };
+    const seg = segments.find(fits) ?? segments.find((x) => pos >= x.start && pos <= x.start + x.node.textContent.length);
+    if (!seg) return null;
+    const r = document.createRange();
+    r.setStart(seg.node, pos - seg.start);
+    r.collapse(true);
+    return r;
   };
   return { text, posOf, rangeAt };
 }
@@ -405,12 +411,21 @@ function selectionInfo() {
   let el = sel.rangeCount ? sel.anchorNode : null;
   if (el && el.nodeType === Node.TEXT_NODE) el = el.parentElement;
   const body = el && el.closest ? el.closest('.chapter-body') : null;
-  const text = body && !sel.isCollapsed ? sel.toString().trim() : '';
-  if (!text) return null;
+  if (!body || sel.isCollapsed) return null;
   const range = sel.getRangeAt(0);
-  let occurrence = null;
   const model = bodyTextModel(body);
-  const pos = model.posOf(range.startContainer, range.startOffset);
+  // The words as the tracker's copy has them (one newline between
+  // paragraphs, marks and footnotes left out) — Selection.toString puts
+  // two newlines between paragraphs and keeps a footnote's mark, so a
+  // quote taken from it never matched. Its own text where the ends can't
+  // be placed (a range set on an element rather than in text).
+  const from = model.posOf(range.startContainer, range.startOffset);
+  const to = model.posOf(range.endContainer, range.endOffset);
+  const raw = from !== -1 && to > from ? model.text.slice(from, to) : sel.toString();
+  const text = raw.trim();
+  if (!text) return null;
+  let occurrence = null;
+  const pos = from === -1 ? -1 : from + (raw.length - raw.trimStart().length);
   if (pos !== -1) {
     const plain = model.text.toLowerCase();
     const needle = text.toLowerCase();
@@ -475,6 +490,11 @@ let trackerOutbox = Promise.resolve();
 // coming back up catches up on whatever a failed push left unsent.
 let trackerLink = 'up';
 let trackerRefusal = null; // the last refusal's words, said once
+// The routes whose last push failed, by path: the link is up again only
+// when none is, so one route that keeps failing while the others get
+// through says so once instead of flipping back and forth.
+const trackerFailing = new Map(); // path -> 'down' | 'refused'
+const routeOf = (path) => path.split('?')[0];
 // The dot in the bottom bar: off (no tracker yet), up, down, refused.
 function showTrackerLink(state, reason) {
   const dot = $('#tracker-link');
@@ -491,10 +511,10 @@ function trackerLinkIs(state, reason) {
     if (trackerLink === 'up') return;
     trackerLink = 'up'; trackerRefusal = null;
     toast(t('The tracker is back; catching up.'));
-    setTimeout(() => { sendManuscriptText(); sendAllWordCounts(); }, 0); // once the push that got through has been marked sent
+    setTimeout(() => { sendManuscriptText(); sendAllWordCounts(true); }, 0); // once the push that got through has been marked sent; the counts too, edited meanwhile
   } else if (state === 'refused') {
-    if (trackerLink !== 'refused' || trackerRefusal !== reason) toast(t('The tracker refused: ') + reason, 8000);
-    trackerLink = 'refused'; trackerRefusal = reason;
+    if (trackerLink !== 'refused' || (reason !== undefined && trackerRefusal !== reason)) toast(t('The tracker refused: ') + (reason ?? trackerRefusal ?? ''), 8000);
+    trackerLink = 'refused'; if (reason !== undefined) trackerRefusal = reason;
   } else {
     if (trackerLink !== 'down') toast(t("The tracker isn't answering; changes will be sent when it's back."));
     trackerLink = 'down';
@@ -503,13 +523,23 @@ function trackerLinkIs(state, reason) {
 $('#tracker-link').onclick = () => { sendManuscriptText(); sendAllWordCounts(true); }; // a retry, by hand
 function trackerPost(path, init = {}) {
   const url = trackerReadyUrl + path + (path.includes('?') ? '&' : '?') + 'book=' + encodeURIComponent(book ? book.id : '');
+  const route = routeOf(path);
+  const failed = (state, reason) => {
+    trackerFailing.set(route, state);
+    const worst = [...trackerFailing.values()].includes('refused') ? 'refused' : 'down';
+    trackerLinkIs(worst, reason);
+  };
   const send = () => fetch(url, { method: 'POST', ...init }).then(async (r) => {
-    if (r.ok) { trackerLinkIs('up'); return r; }
+    if (r.ok) {
+      trackerFailing.delete(route);
+      if (!trackerFailing.size) trackerLinkIs('up');
+      return r;
+    }
     let reason = String(r.status);
     try { const body = await r.json(); if (body && body.error) reason = body.error; } catch { /* no words with it */ }
-    trackerLinkIs('refused', reason);
+    failed('refused', reason);
     return null;
-  }).catch(() => { trackerLinkIs('down'); return null; });
+  }).catch(() => { failed('down'); return null; });
   const turn = trackerOutbox.then(send, send);
   trackerOutbox = turn.then(() => undefined, () => undefined);
   return turn;
@@ -843,8 +873,8 @@ function quoteRange(body, quote, occurrence, model = bodyTextModel(body)) {
   }
   const idx = matches[(occurrence || 1) - 1];
   if (idx === undefined) return null;
-  const startR = model.rangeAt(idx);
-  const endR = model.rangeAt(idx + clean.length);
+  const startR = model.rangeAt(idx, 'start');
+  const endR = model.rangeAt(idx + clean.length, 'end');
   if (!startR || !endR) return null;
   const range = document.createRange();
   range.setStart(startR.startContainer, startR.startOffset);
@@ -1050,7 +1080,7 @@ let palette = null; // { el, input, list, saved, hits, active, seq } while open
 
 function closePalette(restore) {
   if (!palette) return;
-  const { el, saved } = palette;
+  const { el, saved, vimNav: wasNav } = palette;
   palette = null;
   el.remove();
   if (restore && saved && document.contains(saved.body)) {
@@ -1058,6 +1088,9 @@ function closePalette(restore) {
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(saved.range);
+    // back in normal mode, the selection still a visual one: a key typed
+    // next moves or acts, never overwrites the words
+    if (wasNav) { vimSetNav(true); vimVisual = !sel.isCollapsed; }
   }
 }
 
@@ -1149,7 +1182,8 @@ async function openReferencePalette() {
   const list = document.createElement('ul');
   el.append(input, list);
   document.body.appendChild(el);
-  palette = { el, input, list, saved, hits: [], active: 0, seq: 0, note: null };
+  // focusing the input takes vim out of normal mode (app.js focusin); closing gives it back
+  palette = { el, input, list, saved, hits: [], active: 0, seq: 0, note: null, vimNav: typeof vimNav !== 'undefined' && vimNav };
   input.value = saved ? saved.text : '';
   input.focus();
   input.select();
@@ -1184,6 +1218,8 @@ async function openReferencePalette() {
 // The chord that opens the palette. Vim keys (app.js) take Ctrl+D for a
 // half page and would swallow it first: they ask neoHooks.takesKey below.
 const isPaletteChord = (e) => (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'd';
+// Set once the tracker turns out not to be installed: vim keys keep their Ctrl+D then.
+let trackerMissing = false;
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented) return;
   if (!isPaletteChord(e)) return;
@@ -1503,5 +1539,5 @@ window.neoHooks = {
   // debounce themselves, so this is cheap to call every time
   countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); sendAllWordCounts(); schedulePaintTrackerRefs(); sendCurrentChapterSoon(); },
   // a key the tracker takes before NEO's own handlers would: the palette's Ctrl+D
-  takesKey: (e) => isPaletteChord(e),
+  takesKey: (e) => !trackerMissing && isPaletteChord(e),
 };

@@ -159,7 +159,7 @@ const reset = () => js(`(() => {
   trackerLastSeen = { inside: false, at: 0 }; trackerPaneOpenedAt = 0;
   trackerNotifiedChapter = null; trackerNotifiedWords = null; trackerRefsVersion = null; trackerRefsReply = null;
   trackerSentText.clear(); trackerSentDarlings = null; trackerSentOrder = null; trackerMeasured.clear();
-  trackerLink = 'up'; trackerRefusal = null; document.getElementById('hint').hidden = true;
+  trackerLink = 'up'; trackerRefusal = null; trackerFailing.clear(); document.getElementById('hint').hidden = true;
   document.getElementById('tracker-link').className = 'up'; trackerCountsSentFor = null;
   clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); clearTimeout(trackerEditingLapse);
   clearTimeout(trackerNotifyTimer); clearTimeout(trackerNotifyWordsTimer); return 0;
@@ -774,14 +774,35 @@ test('Ctrl+D opens the palette prefilled with the selection; Enter files it and 
   });
 });
 
-test('Ctrl+D opens the palette while vim keys are on', async () => {
+test('Ctrl+D in vim normal mode opens the palette, and Escape gives normal mode back with the selection', async () => {
   await withStub(paletteStub, async () => {
     await js(`vimEnabled = true; 0`);
     try {
       assert.equal(await selectHello(), 'Hello');
-      await ctrlD();
+      await js(`document.querySelector('.chapter-body').focus(); vimSetNav(true); vimVisual = true; 0`);
+      // on the editor itself, as a key typed there arrives: vim's own handler sees it first
+      await js(`document.querySelector('.chapter-body').dispatchEvent(new KeyboardEvent('keydown', { key: 'd', code: 'KeyD', ctrlKey: true, bubbles: true, cancelable: true })); 0`);
       await waitFor(`document.getElementById('tracker-palette')`);
-    } finally { await js(`vimEnabled = false; 0`); }
+      await js(`document.querySelector('#tracker-palette input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 0`);
+      await waitFor(`!document.getElementById('tracker-palette')`);
+      assert.equal(await js(`vimNav`), true, 'back in normal mode');
+      assert.equal(await js(`getSelection().toString()`), 'Hello', 'the selection kept');
+    } finally { await js(`vimSetNav(false); vimEnabled = false; 0`); }
+  });
+});
+
+test('one route that keeps failing says so once while the others get through', async () => {
+  await withStub(`{ '__neo-manuscript-text': { __down: true } }`, async () => {
+    for (let i = 0; i < 3; i++) {
+      await js(`trackerMeasured.clear(); trackerSentText.clear(); 0`);
+      await selectHello();
+      await tick(400);
+      await js(`getSelection().removeAllRanges(); 0`);
+      await tick(250);
+    }
+    assert.ok((await calls('__neo-selection')).length >= 2, 'the selections got through');
+    assert.equal(await js(`document.getElementById('tracker-link').className`), 'down', 'still down: the text route never did');
+    assert.ok(!(await js(`document.getElementById('hint').textContent`)).includes('is back'), 'no "back" in between');
   });
 });
 
@@ -845,6 +866,16 @@ async function main() {
     while (!(win = BrowserWindow.getAllWindows()[0])) await tick(50);
     wc = win.webContents;
     while (!(await js(`typeof library !== 'undefined' && !!library`).catch(() => false))) await tick(50);
+    // Hermetic, and before the book opens (showing the Manuscript tab runs
+    // the pane's ensure): the real one would ping or spawn the real tracker,
+    // load it in the iframe, and post to it under this test book's id. A
+    // test that needs a server installs a stub.
+    await js(`ensureTrackerPane = async () => {
+      if (trackerFrame) return;
+      trackerFrame = document.createElement('iframe'); // a bare frame where the tracker would be, for the keyboard hand-off
+      trackerFrame.id = 'tracker-frame';
+      document.getElementById('tracker-pane-body').replaceChildren(trackerFrame);
+    }; 0`);
     await js(`(async () => {
       document.getElementById('firstrun').hidden = true;
       await addImportedBooks([{ name: 'Tracker Test Book', chapters: [{ title: 'One', paras: [{ text: 'Hello.' }] }] }], library.shelves[0]);
@@ -852,15 +883,7 @@ async function main() {
       await openBook(ids[ids.length - 1]);
     })()`);
     await waitFor(`document.querySelector('.chapter[data-id] .chapter-body')`, 10000);
-    // Hermetic: the pane's own ensure would ping or spawn the real tracker and
-    // load it in the iframe — and bind an unbound live record to this test
-    // book. A test that needs a server installs a stub.
-    await js(`ensureTrackerPane = async () => {
-      if (trackerFrame) return;
-      trackerFrame = document.createElement('iframe'); // a bare frame where the tracker would be, for the keyboard hand-off
-      trackerFrame.id = 'tracker-frame';
-      document.getElementById('tracker-pane-body').replaceChildren(trackerFrame);
-    }; 0`);
+    if (await js(`trackerReadyUrl`)) throw new Error('the real tracker was reached at book open: the harness is not hermetic');
     win.focus();
     for (const t of tests) {
       try {

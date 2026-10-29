@@ -17,6 +17,7 @@ const os = require('os');
 
 const TRACKER_DIR = path.join(os.homedir(), 'Projects', 'litrpg-tracker');
 let trackerChild = null; // only set when WE spawned it — never kill a server we just found running
+let trackerChildPort = null; // the port it said it's on
 let trackerReadyPromise = null;
 
 async function trackerPing(port) {
@@ -45,11 +46,22 @@ function ensureTrackerRunning(logError) {
     if (!fs.existsSync(TRACKER_DIR)) return { ok: false, reason: 'missing-repo' };
     // already running (Spencer's own terminal, or a previous NEO session) — use it, don't spawn a second one
     if (await trackerPing(5173)) return { ok: true, url: 'http://localhost:5173' };
+    // one we spawned that's still starting (a slow disk outran the last
+    // wait): wait on it again rather than spawn a second on the next port
+    if (trackerChild && trackerChild.exitCode === null && trackerChildPort) {
+      return (await trackerWaitUntilReady(trackerChildPort))
+        ? { ok: true, url: 'http://localhost:' + trackerChildPort } : { ok: false, reason: 'timeout' };
+    }
+    const vite = path.join(TRACKER_DIR, 'node_modules', '.bin', 'vite');
+    if (!fs.existsSync(vite)) return { ok: false, reason: 'not-installed' }; // the repo is there, npm install hasn't been run
     try {
       // vite's own binary, not `npm run dev`: npm doesn't reliably pass a kill on to
       // the script it runs, which left vite itself running after NEO quit
-      const child = require('child_process').spawn(path.join(TRACKER_DIR, 'node_modules', '.bin', 'vite'), [], { cwd: TRACKER_DIR, stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = require('child_process').spawn(vite, [], { cwd: TRACKER_DIR, stdio: ['ignore', 'pipe', 'ignore'] });
       trackerChild = child;
+      // a spawn that fails is an 'error' event, not a throw: without a
+      // listener it's an uncaught exception in the main process
+      child.on('error', (err) => { logError('tracker', err); if (trackerChild === child) trackerChild = null; });
       // any exit invalidates the cache, so the next call starts fresh instead of reusing a dead promise
       child.on('exit', () => { if (trackerChild === child) trackerChild = null; trackerReadyPromise = null; });
       // Vite's own startup line looks like "  ➜  Local:   http://localhost:5173/" — read the real
@@ -62,9 +74,11 @@ function ensureTrackerRunning(logError) {
           if (m) settle(Number(m[1]));
         });
         child.once('exit', () => settle(null));
+        child.once('error', () => settle(null));
         setTimeout(() => settle(null), 5000); // Vite usually prints within ~1s
       });
       const actualPort = port || 5173; // fall back to the default if we never caught the startup line
+      if (trackerChild === child) trackerChildPort = actualPort;
       const ready = await trackerWaitUntilReady(actualPort);
       if (!ready) return { ok: false, reason: 'timeout' };
       return { ok: true, url: 'http://localhost:' + actualPort };
