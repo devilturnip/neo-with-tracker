@@ -330,19 +330,41 @@ function notifyTrackerOfWordCount() {
   }, 1000); // typing settles before this fires — no point syncing every keystroke
 }
 
-// The reverse of textPosToRange (app.js): given a text node + offset inside
-// it (a live Selection's own startContainer/startOffset, say), find how far
-// into bodyPlainText(body) that point falls. Same TreeWalker-over-text-nodes
-// approach, just stopping at the matching node instead of a target length.
-function rangeToTextPos(body, node, offset) {
-  const w = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
-  let n, acc = 0;
-  while ((n = w.nextNode())) {
-    if (n === node) return acc + offset;
-    acc += n.textContent.length;
-  }
-  return -1;
+// The chapter body read as chapterText reads it — what UNCOUNTED names
+// left out, a newline after each paragraph (app.js plainText) — with each
+// text node's place in it, so a position found in that text maps back to
+// the live node. The quotes the tracker holds were cut from this text
+// (caretPlace), so this is the text to search: bodyPlainText's raw run of
+// text nodes has no paragraph breaks and keeps ghost notes, so a quote
+// across two paragraphs never matched, and one counted past a ghost note
+// landed an occurrence off.
+function bodyTextModel(body) {
+  let text = '';
+  const segments = []; // { node, start }
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) { segments.push({ node, start: text.length }); text += node.textContent; return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node !== body && node.matches(UNCOUNTED)) return;
+    for (const child of node.childNodes) walk(child);
+    if (node !== body && node.matches('p, div, br')) text += '\n';
+  };
+  walk(body);
+  const posOf = (node, offset) => { const seg = segments.find((x) => x.node === node); return seg ? seg.start + offset : -1; };
+  const rangeAt = (pos) => {
+    for (const seg of segments) {
+      const len = seg.node.textContent.length;
+      if (pos >= seg.start && pos <= seg.start + len) {
+        const r = document.createRange();
+        r.setStart(seg.node, pos - seg.start);
+        r.collapse(true);
+        return r;
+      }
+    }
+    return null;
+  };
+  return { text, posOf, rangeAt };
 }
+
 
 // NEO's own live manuscript selection, followed into the tracker so a +/-
 // or EditDialog edit made there can tie itself to a sentence in the text —
@@ -370,9 +392,10 @@ function selectionInfo() {
   if (!text) return null;
   const range = sel.getRangeAt(0);
   let occurrence = null;
-  const pos = rangeToTextPos(body, range.startContainer, range.startOffset);
+  const model = bodyTextModel(body);
+  const pos = model.posOf(range.startContainer, range.startOffset);
   if (pos !== -1) {
-    const plain = bodyPlainText(body).toLowerCase();
+    const plain = model.text.toLowerCase();
     const needle = text.toLowerCase();
     let idx = -1, count = 0;
     while ((idx = plain.indexOf(needle, idx + 1)) !== -1 && idx <= pos) count++;
@@ -761,19 +784,18 @@ let trackerJumpHighlightTimer = null;
 
 // Where a tracker quote sits in a chapter body, as a Range — or null when
 // it can't be found (the text has changed since). Shared by the jump to a
-// passage and the Refs highlighting, which passes the body's lowercased
-// plain text in so a chapter with many references is read once.
-function quoteRange(body, quote, occurrence, lowerText) {
+// passage and the Refs highlighting, which passes the body's text model in
+// so a chapter with many references is read once.
+function quoteRange(body, quote, occurrence, model = bodyTextModel(body)) {
   // tracker quotes are wrapped '…' — strip that pair back off before
   // searching, matching the convention its own note-writing side uses
   const clean = String(quote || '').replace(/^['"‘’“”]/, '').replace(/['"‘’“”]$/, '');
   if (!clean) return null;
-  // same text-position machinery darlings use to relocate a cut by its
-  // surrounding text (see bodyPlainText/textPosToRange in app.js), just
-  // walked to find a literal match instead of restoring at a remembered
-  // offset. Case-insensitive, matching findRanges' own convention (Find &
-  // Replace) — a quote's case shouldn't be the reason it can't be found.
-  const haystack = lowerText ?? bodyPlainText(body).toLowerCase();
+  // Searched in the text the quote was cut from (bodyTextModel), walked to
+  // find a literal match. Case-insensitive, matching findRanges' own
+  // convention (Find & Replace) — a quote's case shouldn't be the reason it
+  // can't be found.
+  const haystack = model.text.toLowerCase();
   const needle = clean.toLowerCase();
   // Collect every match rather than stopping at the first — occurrence
   // picks which one (1 = the first, matching how most references don't
@@ -786,8 +808,8 @@ function quoteRange(body, quote, occurrence, lowerText) {
   }
   const idx = matches[(occurrence || 1) - 1];
   if (idx === undefined) return null;
-  const startR = textPosToRange(body, idx);
-  const endR = textPosToRange(body, idx + clean.length);
+  const startR = model.rangeAt(idx);
+  const endR = model.rangeAt(idx + clean.length);
   if (!startR || !endR) return null;
   const range = document.createRange();
   range.setStart(startR.startContainer, startR.startOffset);
@@ -1037,14 +1059,15 @@ async function searchPalette() {
   const seq = ++palette.seq;
   if (q.length < 2) { palette.hits = []; palette.note = null; renderPalette(); return; }
   let hits = [];
+  let down = false; // "No matches" would read as "no such entry"
   try {
     const reply = await (await fetch(trackerReadyUrl + '__search?q=' + encodeURIComponent(q) + '&limit=8')).json();
     hits = Array.isArray(reply.hits) ? reply.hits : [];
-  } catch { hits = []; }
+  } catch { down = true; }
   if (!palette || seq !== palette.seq) return; // closed, or typed past
   palette.hits = hits;
   palette.active = 0;
-  palette.note = hits.length ? null : t('No matches');
+  palette.note = down ? t("The tracker isn't answering right now") : hits.length ? null : t('No matches');
   renderPalette();
 }
 
@@ -1123,9 +1146,12 @@ async function openReferencePalette() {
   searchPalette();
 }
 
+// The chord that opens the palette. Vim keys (app.js) take Ctrl+D for a
+// half page and would swallow it first: they ask neoHooks.takesKey below.
+const isPaletteChord = (e) => (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'd';
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented) return;
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'd') return;
+  if (!isPaletteChord(e)) return;
   e.preventDefault();
   openReferencePalette();
 });
@@ -1174,11 +1200,11 @@ function clearTrackerRefs() {
 // passage are one entry naming them all, extra only if all of them are.
 function findTrackerRefs(body, refs) {
   const byPassage = new Map();
-  const lower = bodyPlainText(body).toLowerCase();
+  const model = bodyTextModel(body);
   for (const ref of refs) {
-    const range = quoteRange(body, ref.quote, ref.occurrence, lower);
+    const range = quoteRange(body, ref.quote, ref.occurrence, model);
     if (!range) continue;
-    const at = rangeToTextPos(body, range.startContainer, range.startOffset) + ':' + range.toString().length;
+    const at = model.posOf(range.startContainer, range.startOffset) + ':' + range.toString().length;
     const entry = byPassage.get(at) || { range, extra: true, entities: [] };
     if (!ref.extra) entry.extra = false;
     if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
@@ -1396,6 +1422,12 @@ document.addEventListener('keydown', hideTrackerRefTip, true);
 // Each is a one-liner in app.js of the form `window.neoHooks?.name?.(...)`,
 // so app.js runs unchanged (and Pocket, which never loads this file, sees
 // no-ops). The list in README.md is the one to re-apply after a merge.
+// renderChapters (app.js) rebuilds every chapter section — a drag-reorder,
+// a chapter added or set aside — and the painted ranges collapse with the
+// old nodes. Nothing else repaints until a count changes, so the rebuild
+// itself asks for one, and pushes the order while it's at it.
+new MutationObserver(() => { schedulePaintTrackerRefs(); sendCurrentChapterSoon(); }).observe($('#chapters'), { childList: true });
+
 window.neoHooks = {
   // createChapterAt(): a chapter was just made interactively
   chapterCreated: notifyTrackerOfNewChapter,
@@ -1434,4 +1466,6 @@ window.neoHooks = {
   // updateCounters(): the word counts were refreshed — both notifiers
   // debounce themselves, so this is cheap to call every time
   countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); schedulePaintTrackerRefs(); sendCurrentChapterSoon(); },
+  // a key the tracker takes before NEO's own handlers would: the palette's Ctrl+D
+  takesKey: (e) => isPaletteChord(e),
 };

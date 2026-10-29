@@ -156,6 +156,7 @@ const reset = () => js(`(() => {
   closeSidePane(); document.getElementById('side-pane').classList.remove('open');
   getSelection().removeAllRanges();
   trackerFlowActive = false; trackerEditing = false; trackerNotifiedSelection = null;
+  trackerLastSeen = { inside: false, at: 0 }; trackerPaneOpenedAt = 0;
   trackerNotifiedChapter = null; trackerNotifiedWords = null; trackerRefsVersion = null; trackerRefsReply = null;
   trackerSentText.clear(); trackerSentDarlings = null; trackerSentOrder = null; trackerMeasured.clear();
   trackerLink = 'up'; trackerRefusal = null; document.getElementById('hint').hidden = true;
@@ -355,6 +356,33 @@ test('Refs tints referenced passages, names them on hover, and Alt+D turns it of
     await js(`document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', key: 'd', altKey: true, bubbles: true, cancelable: true }))`);
     await waitFor(`!CSS.highlights.has('neo-tracker-refs')`);
     assert.equal(await js(`localStorage.getItem('neo-tracker-refs')`), '0', 'Alt+D turned it off');
+  });
+});
+
+test('Refs read the text as the tracker holds it: a quote across two paragraphs is tinted, a ghost note is not counted', async () => {
+  const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
+  await js(`document.querySelector('.chapter-body').insertAdjacentHTML('beforeend', '<p class="ghost">Hello ghost</p><p>Hello again.</p>'); 0`);
+  try {
+    await withStub(refsStub([
+      { kind: 'item', id: 'both', name: 'Both', label: 'item', quote: 'Hello.\nHello again' },
+      { kind: 'item', id: 'second', name: 'Second', label: 'item', quote: 'Hello', occurrence: 2 },
+    ]), async () => {
+      await js(`document.getElementById('tracker-refs-toggle').click()`);
+      await waitFor(`(CSS.highlights.get('neo-tracker-refs')?.size ?? 0) === 2`);
+      const inGhost = await js(`[...CSS.highlights.get('neo-tracker-refs')].some((r) => r.startContainer.parentElement.closest('.ghost'))`);
+      assert.equal(inGhost, false, 'the second "Hello" is the one in the story, not the ghost note');
+    });
+  } finally {
+    await js(`document.querySelector('.chapter-body').innerHTML = ${JSON.stringify(saved)}; 0`);
+  }
+});
+
+test('a rebuild of the chapters (a reorder) paints Refs again', async () => {
+  await withStub(refsStub([{ kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello' }]), async () => {
+    await js(`document.getElementById('tracker-refs-toggle').click()`);
+    await waitFor(`(CSS.highlights.get('neo-tracker-refs')?.size ?? 0) === 1`);
+    await js(`renderChapters(); 0`);
+    await waitFor(`(() => { const h = CSS.highlights.get('neo-tracker-refs'); if (!h || h.size !== 1) return false; const r = [...h][0]; return document.contains(r.startContainer) && !r.collapsed; })()`, 3000);
   });
 });
 
@@ -727,6 +755,17 @@ test('Ctrl+D opens the palette prefilled with the selection; Enter files it and 
   });
 });
 
+test('Ctrl+D opens the palette while vim keys are on', async () => {
+  await withStub(paletteStub, async () => {
+    await js(`vimEnabled = true; 0`);
+    try {
+      assert.equal(await selectHello(), 'Hello');
+      await ctrlD();
+      await waitFor(`document.getElementById('tracker-palette')`);
+    } finally { await js(`vimEnabled = false; 0`); }
+  });
+});
+
 test('Escape closes the palette without posting, selection intact', async () => {
   await withStub(paletteStub, async () => {
     assert.equal(await selectHello(), 'Hello');
@@ -794,6 +833,15 @@ async function main() {
       await openBook(ids[ids.length - 1]);
     })()`);
     await waitFor(`document.querySelector('.chapter[data-id] .chapter-body')`, 10000);
+    // Hermetic: the pane's own ensure would ping or spawn the real tracker and
+    // load it in the iframe — and bind an unbound live record to this test
+    // book. A test that needs a server installs a stub.
+    await js(`ensureTrackerPane = async () => {
+      if (trackerFrame) return;
+      trackerFrame = document.createElement('iframe'); // a bare frame where the tracker would be, for the keyboard hand-off
+      trackerFrame.id = 'tracker-frame';
+      document.getElementById('tracker-pane-body').replaceChildren(trackerFrame);
+    }; 0`);
     win.focus();
     for (const t of tests) {
       try {

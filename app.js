@@ -5385,6 +5385,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   const k = vimKeyOf(e);
+  if (window.neoHooks?.takesKey?.(e)) return; // litrpg-tracker (tracker-bridge.js): its Ctrl+D palette
   // Ctrl-d / Ctrl-u move half a screen; other modified keys keep their jobs
   if (e.ctrlKey && !e.metaKey && !e.altKey && (k === 'd' || k === 'u')) {
     e.preventDefault();

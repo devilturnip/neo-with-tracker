@@ -46,7 +46,9 @@ function ensureTrackerRunning(logError) {
     // already running (Spencer's own terminal, or a previous NEO session) — use it, don't spawn a second one
     if (await trackerPing(5173)) return { ok: true, url: 'http://localhost:5173' };
     try {
-      const child = require('child_process').spawn('npm', ['run', 'dev'], { cwd: TRACKER_DIR, stdio: ['ignore', 'pipe', 'ignore'] });
+      // vite's own binary, not `npm run dev`: npm doesn't reliably pass a kill on to
+      // the script it runs, which left vite itself running after NEO quit
+      const child = require('child_process').spawn(path.join(TRACKER_DIR, 'node_modules', '.bin', 'vite'), [], { cwd: TRACKER_DIR, stdio: ['ignore', 'pipe', 'ignore'] });
       trackerChild = child;
       // any exit invalidates the cache, so the next call starts fresh instead of reusing a dead promise
       child.on('exit', () => { if (trackerChild === child) trackerChild = null; trackerReadyPromise = null; });
