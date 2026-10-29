@@ -70,7 +70,12 @@ const withStub = async (routes, fn, state = {}) => {
       window.__stub.calls.push({ url, body: init && typeof init.body === 'string' ? init.body : null });
       const key = Object.keys(routes).find((k) => url.includes(k));
       const reply = key === undefined ? undefined : typeof routes[key] === 'function' ? routes[key](url, init) : routes[key];
-      return Promise.resolve(reply).then((r) => ({ ok: true, json: async () => (r === undefined ? {} : r) }));
+      // a route answering { __down: true } is a tracker that isn't there; { __status, error } one that said no
+      return Promise.resolve(reply).then((r) => {
+        if (r && r.__down) throw new TypeError('stub: tracker down');
+        if (r && r.__status) return { ok: false, status: r.__status, json: async () => ({ error: r.error }) };
+        return { ok: true, json: async () => (r === undefined ? {} : r) };
+      });
     };
     stopTrackerMailbox(); // a watcher on the real server (a hover started the tracker) would sit in its long-poll
     trackerReadyUrl = 'http://stub/';
@@ -153,6 +158,7 @@ const reset = () => js(`(() => {
   trackerFlowActive = false; trackerEditing = false; trackerNotifiedSelection = null;
   trackerNotifiedChapter = null; trackerNotifiedWords = null; trackerRefsVersion = null; trackerRefsReply = null;
   trackerSentText.clear(); trackerSentDarlings = null; trackerSentOrder = null; trackerMeasured.clear();
+  trackerLink = 'up'; trackerRefusal = null; document.getElementById('hint').hidden = true;
   clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); clearTimeout(trackerEditingLapse);
   clearTimeout(trackerNotifyTimer); clearTimeout(trackerNotifyWordsTimer); return 0;
 })()`);
@@ -539,6 +545,36 @@ test('a jump and a "send the manuscript" arrive through the mailbox; nothing pol
     assert.equal((await calls('__tracker-editing')).length, 0, 'no editing poll');
     assert.equal((await calls('__version')).length, 0, 'no version watch');
   }, { mail: [], n: 1 });
+});
+
+test('a push the tracker did not take goes again once it answers, with nothing more typed', async () => {
+  await withStub(`{ '__neo-manuscript-text': () => (window.__stub.state.down ? { __down: true } : {}) }`, async () => {
+    await selectHello();
+    await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
+    await tick(200);
+    assert.ok((await js(`document.getElementById('hint').textContent`)).includes("isn't answering"), 'said once that the tracker is down');
+    await clearCalls();
+    await setStub({ down: false });
+    // the sweep (and any later settle) still carries the chapter, though it reads as measured
+    await js(`sendManuscriptText(); 0`);
+    await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
+    const body = JSON.parse((await calls('__neo-manuscript-text'))[0].body);
+    assert.equal(body.chapters.length, 1, 'the chapter whose push failed goes again');
+    await waitFor(`document.getElementById('hint').textContent.includes('is back')`);
+  }, { down: true });
+});
+
+test('a tracker that refuses the book says so once, not on every push', async () => {
+  const no = `{ __status: 409, error: 'this record follows another book' }`;
+  await withStub(`{ '__neo-manuscript-text': ${no}, '__neo-selection': ${no} }`, async () => {
+    await selectHello();
+    await waitFor(`!document.getElementById('hint').hidden`);
+    assert.ok((await js(`document.getElementById('hint').textContent`)).includes('follows another book'));
+    await js(`document.getElementById('hint').hidden = true; trackerMeasured.clear(); sendManuscriptText(); 0`);
+    await tick(400);
+    assert.ok((await calls('__neo-manuscript-text')).length >= 2, 'a second push was refused too');
+    assert.equal(await js(`document.getElementById('hint').hidden`), true, 'the same refusal is not said again');
+  });
 });
 
 test('the book\'s order changing with no typing is pushed on its own', async () => {

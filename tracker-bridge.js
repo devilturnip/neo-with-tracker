@@ -429,9 +429,35 @@ function caretPlace() {
 // request failed — a caller marks something as sent only on a 2xx. Every
 // push names the book, so a tracker bound to another book can refuse it.
 let trackerOutbox = Promise.resolve();
+// How the tracker last answered: up, down (no answer at all — restarting,
+// or not there), or refused (an answer that said no: a record that follows
+// another book). Each change is one toast, never a stream of them, and
+// coming back up catches up on whatever a failed push left unsent.
+let trackerLink = 'up';
+let trackerRefusal = null; // the last refusal's words, said once
+function trackerLinkIs(state, reason) {
+  if (state === 'up') {
+    if (trackerLink === 'up') return;
+    trackerLink = 'up'; trackerRefusal = null;
+    toast(t('The tracker is back; catching up.'));
+    setTimeout(sendManuscriptText, 0); // once the push that got through has been marked sent
+  } else if (state === 'refused') {
+    if (trackerLink !== 'refused' || trackerRefusal !== reason) toast(t('The tracker refused: ') + reason, 8000);
+    trackerLink = 'refused'; trackerRefusal = reason;
+  } else {
+    if (trackerLink !== 'down') toast(t("The tracker isn't answering; changes will be sent when it's back."));
+    trackerLink = 'down';
+  }
+}
 function trackerPost(path, init = {}) {
   const url = trackerReadyUrl + path + (path.includes('?') ? '&' : '?') + 'book=' + encodeURIComponent(book ? book.id : '');
-  const send = () => fetch(url, { method: 'POST', ...init }).then((r) => (r.ok ? r : null)).catch(() => null);
+  const send = () => fetch(url, { method: 'POST', ...init }).then(async (r) => {
+    if (r.ok) { trackerLinkIs('up'); return r; }
+    let reason = String(r.status);
+    try { const body = await r.json(); if (body && body.error) reason = body.error; } catch { /* no words with it */ }
+    trackerLinkIs('refused', reason);
+    return null;
+  }).catch(() => { trackerLinkIs('down'); return null; });
   const turn = trackerOutbox.then(send, send);
   trackerOutbox = turn.then(() => undefined, () => undefined);
   return turn;
@@ -492,7 +518,9 @@ async function sendChapterTextIfChanged(chId, text) {
       ...(sameDarlings ? {} : { darlings: list }),
     }),
   });
-  if (!reply) return; // not sent: tried again on the next change
+  // not sent: measured again on the next settle or sweep, so it goes then
+  // even if nothing more is typed in it
+  if (!reply) { if (!sameText) trackerMeasured.delete(chId); return; }
   if (!sameText) trackerSentText.set(chId, text);
   if (!sameDarlings) trackerSentDarlings = sig;
   trackerSentOrder = JSON.stringify(order);
@@ -632,7 +660,7 @@ async function sendManuscriptText() {
   const order = trackerOrder();
   if (chapters.length === 0 && sig === trackerSentDarlings && JSON.stringify(order) === trackerSentOrder) return;
   const reply = await trackerPost('__neo-manuscript-text', { body: JSON.stringify({ partial: true, order, chapters, darlings: list }) });
-  if (!reply) return;
+  if (!reply) { for (const { id } of chapters) trackerMeasured.delete(id); return; }
   for (const { id, text } of chapters) trackerSentText.set(id, text);
   trackerSentDarlings = sig;
   trackerSentOrder = JSON.stringify(order);

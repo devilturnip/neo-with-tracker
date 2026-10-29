@@ -71,7 +71,13 @@ function ensureTrackerRunning(logError) {
       trackerReadyPromise = null;
       return { ok: false, reason: 'spawn-failed' };
     }
-  })();
+  })().then((result) => {
+    // a failure isn't kept for the session: the next hover tries again — a server slow to
+    // start may be up by then, and a spawn that ran out its 20 s is still coming up and
+    // is found by the ping rather than spawned twice
+    if (!result.ok) trackerReadyPromise = null;
+    return result;
+  });
   return trackerReadyPromise;
 }
 
