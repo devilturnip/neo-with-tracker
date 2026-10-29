@@ -41,6 +41,7 @@ $('#sticky-list').after(trackerElement('<div id="tracker-pane-body"></div>'));
 // the right edge belongs to the tracker (see openSidePane)
 $('#tabs .tab[data-tab="manuscript"]').after(trackerElement('<button id="side-pane-toggle" data-i18n-title title="Notes & Comments" data-i18n-label="Notes & Comments" aria-pressed="false"><span data-i18n>Stickies</span></button>'));
 // tint every passage the tracker has a reference on (see paintTrackerRefs)
+$('#side-pane-toggle').after(trackerElement('<span id="tracker-link" class="off" title="Tracker: not connected"></span>'));
 $('#side-pane-toggle').after(trackerElement('<button id="tracker-refs-toggle" data-i18n-title title="Show the tracker’s references in the text (Alt+D); every other tracked passage too (Shift+click or Alt+Shift+D)" aria-pressed="false"><span data-i18n>◎ Refs</span></button>'));
 
 /* ================================================================== */
@@ -255,7 +256,9 @@ function ensureTrackerPane() {
     // a trailing slash matters for the URLs built from this below
     trackerReadyUrl = result.url.replace(/\/?$/, '/');
     watchTrackerMailbox(); // what the tracker has for NEO, from now on
+    showTrackerLink('up');
     notifyTrackerOfChapter(true); // the dev server is up — post the current chapter now, so it's already there the moment the page's own poll starts (no need to wait on the iframe's load)
+    sendAllWordCounts();
     schedulePaintTrackerRefs(); // Refs left on from last time can paint now
     if (!trackerFrame) {
       trackerFrame = document.createElement('iframe');
@@ -328,6 +331,20 @@ function notifyTrackerOfWordCount() {
     trackerNotifiedWords = key;
     trackerPost('__neo-wordcount?chapter=' + n + '&id=' + encodeURIComponent(currentChapterId) + '&words=' + words);
   }, 1000); // typing settles before this fires — no point syncing every keystroke
+}
+
+// Every story chapter's count, once per book opened (and again when the
+// link comes back): the per-chapter post above only ever covers the
+// chapter being written, so one edited while the tracker was down kept
+// a stale count there. The counts are cached (chapterWords) — the bottom
+// bar's total already needed every one.
+let trackerCountsSentFor = null; // the book id
+function sendAllWordCounts(force = false) {
+  if (!trackerReadyUrl || !book) return;
+  if (!force && trackerCountsSentFor === book.id) return;
+  trackerCountsSentFor = book.id;
+  const counts = book.chapterOrder.filter(isStoryChapter).map((id) => ({ id, number: storyIndex(id), words: chapterWords(id) }));
+  trackerPost('__neo-wordcounts', { body: JSON.stringify({ counts }) }).then((reply) => { if (!reply) trackerCountsSentFor = null; });
 }
 
 // The chapter body read as chapterText reads it — what UNCOUNTED names
@@ -458,12 +475,23 @@ let trackerOutbox = Promise.resolve();
 // coming back up catches up on whatever a failed push left unsent.
 let trackerLink = 'up';
 let trackerRefusal = null; // the last refusal's words, said once
+// The dot in the bottom bar: off (no tracker yet), up, down, refused.
+function showTrackerLink(state, reason) {
+  const dot = $('#tracker-link');
+  if (!dot) return;
+  dot.className = state;
+  dot.title = state === 'up' ? t('Tracker: connected')
+    : state === 'down' ? t("Tracker: not answering — click to try again")
+    : state === 'refused' ? t('Tracker refused: ') + reason
+    : t('Tracker: not connected');
+}
 function trackerLinkIs(state, reason) {
+  showTrackerLink(state, reason);
   if (state === 'up') {
     if (trackerLink === 'up') return;
     trackerLink = 'up'; trackerRefusal = null;
     toast(t('The tracker is back; catching up.'));
-    setTimeout(sendManuscriptText, 0); // once the push that got through has been marked sent
+    setTimeout(() => { sendManuscriptText(); sendAllWordCounts(); }, 0); // once the push that got through has been marked sent
   } else if (state === 'refused') {
     if (trackerLink !== 'refused' || trackerRefusal !== reason) toast(t('The tracker refused: ') + reason, 8000);
     trackerLink = 'refused'; trackerRefusal = reason;
@@ -472,6 +500,7 @@ function trackerLinkIs(state, reason) {
     trackerLink = 'down';
   }
 }
+$('#tracker-link').onclick = () => { sendManuscriptText(); sendAllWordCounts(true); }; // a retry, by hand
 function trackerPost(path, init = {}) {
   const url = trackerReadyUrl + path + (path.includes('?') ? '&' : '?') + 'book=' + encodeURIComponent(book ? book.id : '');
   const send = () => fetch(url, { method: 'POST', ...init }).then(async (r) => {
@@ -502,7 +531,13 @@ function storyIndex(chId) {
 // order. Sent with every manuscript push, so the tracker can renumber its
 // own chapters when one is inserted, removed or moved here.
 function trackerOrder() {
-  return book ? book.chapterOrder.filter(isStoryChapter).map((id, i) => ({ id, number: i + 1 })) : [];
+  if (!book) return [];
+  const titles = book.chapterTitles || {};
+  // a title rides along; the tracker fills its own blanks with it, never overwrites
+  return book.chapterOrder.filter(isStoryChapter).map((id, i) => {
+    const title = (titles[id] || '').trim();
+    return { id, number: i + 1, ...(title ? { title } : {}) };
+  });
 }
 
 // NEO's darlings as the tracker takes them: a passage cut from the
@@ -1452,6 +1487,7 @@ window.neoHooks = {
     const onManuscript = name === 'manuscript';
     $('#side-pane-toggle').hidden = !onManuscript;
     $('#tracker-refs-toggle').hidden = !onManuscript;
+    $('#tracker-link').hidden = !onManuscript;
     // The tracker starts with the book, not with the first look at the
     // drawer: it follows the text as it's edited (every typing pause sends
     // the chapter), so edits made before it was up would be a gap. The
@@ -1465,7 +1501,7 @@ window.neoHooks = {
   darlingRendered: (el, content, d) => { el.dataset.did = d.id; content.classList.add('darling-text'); sendCurrentChapterSoon(); schedulePaintTrackerRefs(); },
   // updateCounters(): the word counts were refreshed — both notifiers
   // debounce themselves, so this is cheap to call every time
-  countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); schedulePaintTrackerRefs(); sendCurrentChapterSoon(); },
+  countersUpdated: () => { notifyTrackerOfChapter(); notifyTrackerOfWordCount(); sendAllWordCounts(); schedulePaintTrackerRefs(); sendCurrentChapterSoon(); },
   // a key the tracker takes before NEO's own handlers would: the palette's Ctrl+D
   takesKey: (e) => isPaletteChord(e),
 };

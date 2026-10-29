@@ -138,3 +138,15 @@ body.light #tracker-palette li.active, body.light #tracker-palette li:not(.tp-no
 }
 body.light #side-pane-toggle:hover { color: #1c1a17; }
 body.light #side-pane-toggle.active { color: var(--accent); }
+
+/* The tracker's link, beside the Refs button: a dot that is off until the
+   dev server is found, green while it answers, grey when it doesn't, red
+   when it refuses (the record follows another book). Click: try again. */
+#tracker-link {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 8px 0 2px;
+  vertical-align: middle; background: #777; cursor: pointer;
+}
+#tracker-link.off { opacity: 0.35; cursor: default; }
+#tracker-link.up { background: #5fb760; }
+#tracker-link.down { background: #9a9a9a; }
+#tracker-link.refused { background: #d9534f; }

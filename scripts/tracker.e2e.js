@@ -160,6 +160,7 @@ const reset = () => js(`(() => {
   trackerNotifiedChapter = null; trackerNotifiedWords = null; trackerRefsVersion = null; trackerRefsReply = null;
   trackerSentText.clear(); trackerSentDarlings = null; trackerSentOrder = null; trackerMeasured.clear();
   trackerLink = 'up'; trackerRefusal = null; document.getElementById('hint').hidden = true;
+  document.getElementById('tracker-link').className = 'up'; trackerCountsSentFor = null;
   clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); clearTimeout(trackerEditingLapse);
   clearTimeout(trackerNotifyTimer); clearTimeout(trackerNotifyWordsTimer); return 0;
 })()`);
@@ -548,7 +549,7 @@ test('every push names the chapter by NEO\'s id and carries the book\'s chapter 
     await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-selection'))`);
     const chId = await chapterId();
     const body = JSON.parse((await calls('__neo-manuscript-text'))[0].body);
-    assert.deepEqual(body.order, [{ id: chId, number: 1 }]);
+    assert.deepEqual(body.order, [{ id: chId, number: 1, title: 'One' }]); // the title rides along
     assert.equal(body.chapters[0].id, chId);
     assert.equal(body.chapters[0].number, 1);
     const sel = (await calls('__neo-selection'))[0].url;
@@ -576,11 +577,13 @@ test('a jump and a "send the manuscript" arrive through the mailbox; nothing pol
 });
 
 test('a push the tracker did not take goes again once it answers, with nothing more typed', async () => {
-  await withStub(`{ '__neo-manuscript-text': () => (window.__stub.state.down ? { __down: true } : {}) }`, async () => {
+  const down = `() => (window.__stub.state.down ? { __down: true } : {})`;
+  await withStub(`{ '__neo-manuscript-text': ${down}, '__neo-wordcounts': ${down} }`, async () => {
     await selectHello();
     await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-manuscript-text'))`);
     await tick(200);
     assert.ok((await js(`document.getElementById('hint').textContent`)).includes("isn't answering"), 'said once that the tracker is down');
+    assert.equal(await js(`document.getElementById('tracker-link').className`), 'down', 'the dot says so too');
     await clearCalls();
     await setStub({ down: false });
     // the sweep (and any later settle) still carries the chapter, though it reads as measured
@@ -589,7 +592,22 @@ test('a push the tracker did not take goes again once it answers, with nothing m
     const body = JSON.parse((await calls('__neo-manuscript-text'))[0].body);
     assert.equal(body.chapters.length, 1, 'the chapter whose push failed goes again');
     await waitFor(`document.getElementById('hint').textContent.includes('is back')`);
+    assert.equal(await js(`document.getElementById('tracker-link').className`), 'up');
+    await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-wordcounts'))`); // catching up carries every count
   }, { down: true });
+});
+
+test('every chapter\'s word count goes once per book, and again by hand from the dot', async () => {
+  await withStub(`{}`, async () => {
+    await js(`sendAllWordCounts(); sendAllWordCounts(); 0`);
+    await waitFor(`window.__stub.calls.some((c) => c.url.includes('__neo-wordcounts'))`);
+    await tick(100);
+    const sent = (await calls('__neo-wordcounts')).map((c) => JSON.parse(c.body));
+    assert.equal(sent.length, 1, 'once per book');
+    assert.deepEqual(sent[0], { counts: [{ id: await chapterId(), number: 1, words: 1 }] });
+    await js(`document.getElementById('tracker-link').click(); 0`);
+    await waitFor(`window.__stub.calls.filter((c) => c.url.includes('__neo-wordcounts')).length === 2`);
+  });
 });
 
 test('a tracker that refuses the book says so once, not on every push', async () => {
@@ -598,6 +616,7 @@ test('a tracker that refuses the book says so once, not on every push', async ()
     await selectHello();
     await waitFor(`!document.getElementById('hint').hidden`);
     assert.ok((await js(`document.getElementById('hint').textContent`)).includes('follows another book'));
+    assert.equal(await js(`document.getElementById('tracker-link').className`), 'refused');
     await js(`document.getElementById('hint').hidden = true; trackerMeasured.clear(); sendManuscriptText(); 0`);
     await tick(400);
     assert.ok((await calls('__neo-manuscript-text')).length >= 2, 'a second push was refused too');
