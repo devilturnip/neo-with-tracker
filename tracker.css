@@ -139,13 +139,16 @@ body.light #tracker-palette li.active, body.light #tracker-palette li:not(.tp-no
 body.light #side-pane-toggle:hover { color: #1c1a17; }
 body.light #side-pane-toggle.active { color: var(--accent); }
 
-/* The tracker's link, beside the Refs button: a dot that is off until the
-   dev server is found, green while it answers, grey when it doesn't, red
-   when it refuses (the record follows another book). Click: try again. */
+/* The tracker's link, just left of the Manuscript tab: a dot that is off
+   until the dev server is found, green while it answers, grey when it
+   doesn't, red when it refuses (the record follows another book). Click:
+   try again. #tabs is a flex row whose items stretch, so the dot centres
+   itself on the tabs' text with align-self. */
 #tracker-link {
-  display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 8px 0 2px;
-  vertical-align: middle; background: #777; cursor: pointer;
+  flex: none; align-self: center; width: 8px; height: 8px; border-radius: 50%; margin: 0 6px 0 0;
+  background: #777; cursor: pointer;
 }
+#tracker-link[hidden] { display: none; }
 #tracker-link.off { opacity: 0.35; cursor: default; }
 #tracker-link.up { background: #5fb760; }
 #tracker-link.down { background: #9a9a9a; }

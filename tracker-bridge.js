@@ -41,7 +41,7 @@ $('#sticky-list').after(trackerElement('<div id="tracker-pane-body"></div>'));
 // the right edge belongs to the tracker (see openSidePane)
 $('#tabs .tab[data-tab="manuscript"]').after(trackerElement('<button id="side-pane-toggle" data-i18n-title title="Notes & Comments" data-i18n-label="Notes & Comments" aria-pressed="false"><span data-i18n>Stickies</span></button>'));
 // tint every passage the tracker has a reference on (see paintTrackerRefs)
-$('#side-pane-toggle').after(trackerElement('<span id="tracker-link" class="off" title="Tracker: not connected"></span>'));
+$('#tabs .tab[data-tab="manuscript"]').before(trackerElement('<span id="tracker-link" class="off" title="Tracker: not connected"></span>'));
 $('#side-pane-toggle').after(trackerElement('<button id="tracker-refs-toggle" data-i18n-title title="Show the tracker’s references in the text (Alt+D); every other tracked passage too (Shift+click or Alt+Shift+D)" aria-pressed="false"><span data-i18n>◎ Refs</span></button>'));
 
 /* ================================================================== */
