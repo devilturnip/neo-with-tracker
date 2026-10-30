@@ -643,46 +643,60 @@ function sendCurrentChapterSoon() {
 
 let trackerNotifiedSelection = null;
 let trackerNotifySelectionTimer = null;
+// When the manuscript was last typed in: a cursor that moves while the
+// author types waits for the pause, one that moves on its own goes at once.
+let trackerLastInput = -Infinity;
+document.addEventListener('input', () => { trackerLastInput = performance.now(); }, true);
+// Until when a burst of changes (a drag, a held arrow key) is still going.
+let trackerSelectionQuietAt = -Infinity;
 function notifyTrackerOfSelection() {
   if (!trackerReadyUrl) return;
   // The palette's own input holds the selection while it's up; the
   // manuscript's is coming back the moment it closes.
   if (palette) return;
-  // 120 ms: a drag's changes come milliseconds apart and still coalesce;
-  // a click reaches the tracker's screens almost at once.
+  // A click or an arrow key with no typing goes at once (the leading edge);
+  // what follows it within 120 ms — the rest of a drag or a held key —
+  // coalesces into one post when it stops. Typing keeps the 120 ms pause:
+  // the chapter's text goes with the cursor, and a keystroke each isn't
+  // worth sending.
   clearTimeout(trackerNotifySelectionTimer);
-  trackerNotifySelectionTimer = setTimeout(() => {
-    const info = selectionInfo();
-    const caret = caretPlace();
-    // The selection's words as the tracker's copy of the text has them —
-    // one newline between paragraphs, footnotes and marks left out —
-    // trimmed, with the offsets following the trim.
-    let text = info ? info.text : '';
-    if (caret && caret.end !== undefined && info) {
-      const raw = caret.text.slice(caret.offset, caret.end);
-      const lead = raw.length - raw.trimStart().length;
-      text = raw.trim();
-      caret.offset += lead;
-      caret.end = caret.offset + text.length;
-    }
-    const occurrence = info ? info.occurrence : null;
-    // Keyed on text, occurrence and cursor together, not text alone —
-    // otherwise selecting the second "Cheshire" right after the first would
-    // look unchanged and never get reposted.
-    const key = text + ':' + (occurrence || '') + ':' + (caret ? caret.chapter + ':' + caret.offset : '');
-    if (key === trackerNotifiedSelection) return;
-    trackerNotifiedSelection = key;
-    const params = [];
-    if (occurrence && occurrence > 1) params.push('occurrence=' + occurrence);
-    if (caret) params.push('chapter=' + caret.chapter, 'chapterId=' + encodeURIComponent(caret.chapterId), 'caret=' + caret.offset);
-    if (caret && caret.end !== undefined && text) params.push('end=' + caret.end);
-    const qs = params.length ? '?' + params.join('&') : '';
-    const post = () => trackerPost('__neo-selection' + qs, { body: text });
-    if (caret) {
-      trackerMeasured.set(caret.chapterId, chapterHTML[caret.chapterId]);
-      sendChapterTextIfChanged(caret.chapterId, caret.text).then(post);
-    } else post();
-  }, 120);
+  const now = performance.now();
+  const leading = now - trackerLastInput > 400 && now >= trackerSelectionQuietAt;
+  trackerSelectionQuietAt = now + 120;
+  if (leading) postTrackerSelection();
+  else trackerNotifySelectionTimer = setTimeout(postTrackerSelection, 120);
+}
+function postTrackerSelection() {
+  const info = selectionInfo();
+  const caret = caretPlace();
+  // The selection's words as the tracker's copy of the text has them —
+  // one newline between paragraphs, footnotes and marks left out —
+  // trimmed, with the offsets following the trim.
+  let text = info ? info.text : '';
+  if (caret && caret.end !== undefined && info) {
+    const raw = caret.text.slice(caret.offset, caret.end);
+    const lead = raw.length - raw.trimStart().length;
+    text = raw.trim();
+    caret.offset += lead;
+    caret.end = caret.offset + text.length;
+  }
+  const occurrence = info ? info.occurrence : null;
+  // Keyed on text, occurrence and cursor together, not text alone —
+  // otherwise selecting the second "Cheshire" right after the first would
+  // look unchanged and never get reposted.
+  const key = text + ':' + (occurrence || '') + ':' + (caret ? caret.chapter + ':' + caret.offset : '');
+  if (key === trackerNotifiedSelection) return;
+  trackerNotifiedSelection = key;
+  const params = [];
+  if (occurrence && occurrence > 1) params.push('occurrence=' + occurrence);
+  if (caret) params.push('chapter=' + caret.chapter, 'chapterId=' + encodeURIComponent(caret.chapterId), 'caret=' + caret.offset);
+  if (caret && caret.end !== undefined && text) params.push('end=' + caret.end);
+  const qs = params.length ? '?' + params.join('&') : '';
+  const post = () => trackerPost('__neo-selection' + qs, { body: text });
+  if (caret) {
+    trackerMeasured.set(caret.chapterId, chapterHTML[caret.chapterId]);
+    sendChapterTextIfChanged(caret.chapterId, caret.text).then(post);
+  } else post();
 }
 document.addEventListener('selectionchange', notifyTrackerOfSelection);
 

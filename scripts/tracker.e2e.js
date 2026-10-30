@@ -532,6 +532,31 @@ test('a caret in the manuscript is posted with its chapter and offset, measured 
   });
 });
 
+test('a cursor moved with no typing reaches the tracker at once; one moved while typing waits for the pause', async () => {
+  await withStub(`{}`, async () => {
+    // how long after the caret lands the selection post is made, from inside the page
+    const timed = (offset, typing) => js(`(async () => {
+      trackerNotifiedSelection = null;
+      trackerSelectionQuietAt = -Infinity;
+      trackerLastInput = ${typing ? 'performance.now()' : '-Infinity'};
+      const count = () => window.__stub.calls.filter((c) => c.url.includes('__neo-selection')).length;
+      const before = count();
+      const node = document.createTreeWalker(document.querySelector('.chapter-body'), NodeFilter.SHOW_TEXT).nextNode();
+      const range = document.createRange(); range.setStart(node, ${offset}); range.collapse(true);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      const t = performance.now();
+      while (count() === before) { await new Promise((r) => setTimeout(r, 2)); if (performance.now() - t > 2000) return -1; }
+      return performance.now() - t;
+    })()`);
+    // the text goes first (once), so the timing below is the cursor's own
+    await timed(1, false);
+    const idle = await timed(2, false);
+    assert.ok(idle >= 0 && idle < 80, 'no typing: posted at once, not after the pause (' + Math.round(idle) + ' ms)');
+    const typing = await timed(3, true);
+    assert.ok(typing >= 110, 'typing: it waits for the 120 ms pause (' + Math.round(typing) + ' ms)');
+  });
+});
+
 test('pushes leave in order: the chapter text before the selection made in it', async () => {
   await withStub(`{
     '__neo-manuscript-text': () => new Promise((resolve) => setTimeout(() => { window.__stub.state.order.push('text'); resolve({}); }, 150)),
