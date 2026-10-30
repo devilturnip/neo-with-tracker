@@ -293,9 +293,9 @@ function ensureTrackerPane() {
 // endpoint (fire-and-forget, mode:'no-cors' since it's a file://-to-http
 // cross-origin request NEO never needs to read a response from), which
 // litrpg-tracker's App.tsx polls — the same shape as every other write this
-// app already makes to that server. Debounced so rapid scroll-driven
-// chapter changes don't spam requests; skips a redundant post to the same
-// chapter.
+// app already makes to that server. A new chapter goes at once — the
+// tracker follows it the moment it lands; the same chapter again only
+// rides the 400 ms pause, for the reorder check, and posts nothing.
 let trackerNotifiedChapter = null;
 let trackerNotifyTimer = null;
 function notifyTrackerOfChapter(immediate) {
@@ -308,7 +308,7 @@ function notifyTrackerOfChapter(immediate) {
     trackerNotifiedChapter = currentChapterId;
     trackerPost('__neo-chapter?n=' + storyIndex(currentChapterId) + '&id=' + encodeURIComponent(currentChapterId));
   };
-  if (immediate) go();
+  if (immediate || (currentChapterId !== trackerNotifiedChapter && isStoryChapter(currentChapterId))) go();
   else trackerNotifyTimer = setTimeout(go, 400);
 }
 
@@ -331,7 +331,7 @@ function notifyTrackerOfWordCount() {
     if (key === trackerNotifiedWords) return;
     trackerNotifiedWords = key;
     trackerPost('__neo-wordcount?chapter=' + n + '&id=' + encodeURIComponent(currentChapterId) + '&words=' + words);
-  }, 1000); // typing settles before this fires — no point syncing every keystroke
+  }, 250); // a pause in typing; the tracker saves it to the file once typing settles
 }
 
 // Every story chapter's count, once per book opened (and again when the
