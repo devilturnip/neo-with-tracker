@@ -459,7 +459,9 @@ function selectionInfo() {
     while ((idx = plain.indexOf(needle, idx + 1)) !== -1 && idx <= pos) count++;
     if (count > 0) occurrence = count;
   }
-  return { body, text, occurrence, range: range.cloneRange() };
+  // where it sits in that text, when the ends could be placed, the trim followed
+  const start = pos !== -1 ? pos : undefined;
+  return { body, text, occurrence, range: range.cloneRange(), start, end: start !== undefined ? start + text.length : undefined };
 }
 
 // Where the cursor is, for the tracker's screens to show the chapter as of
@@ -844,7 +846,7 @@ function handleTrackerMail(mail) {
   const g = mail.goto;
   if (g && typeof g.chapter === 'number') {
     if (g.darling) jumpToTrackerDarling(g.darling, g.quote, g.occurrence);
-    else jumpToTrackerGoto(g.chapter, g.quote, g.occurrence, g.chapterId);
+    else jumpToTrackerGoto(g.chapter, g.quote, g.occurrence, g.chapterId, typeof g.start === 'number' ? { start: g.start, end: g.end } : null);
   }
   if (mail.wantsManuscript) sendManuscriptText();
   const pane = $('#side-pane');
@@ -922,9 +924,26 @@ function quoteRange(body, quote, occurrence, model = bodyTextModel(body)) {
   return range;
 }
 
+// Where the tracker says a passage sits — `start`/`end` into the same
+// text bodyTextModel builds — as a Range, when the text there still reads
+// its words (typing since the tracker last saw the chapter can have moved
+// it: then the words are searched for instead, see quoteRange).
+function spanRange(model, ref) {
+  if (typeof ref.start !== 'number' || typeof ref.end !== 'number' || ref.end <= ref.start) return null;
+  if (model.text.slice(ref.start, ref.end).toLowerCase() !== String(ref.quote || '').toLowerCase()) return null;
+  const startR = model.rangeAt(ref.start, 'start');
+  const endR = model.rangeAt(ref.end, 'end');
+  if (!startR || !endR) return null;
+  const range = document.createRange();
+  range.setStart(startR.startContainer, startR.startOffset);
+  range.setEnd(endR.startContainer, endR.startOffset);
+  return range;
+}
+
 // By NEO's own id for the chapter when the tracker has it (the number can
-// name a different chapter by the time it's read), else by number.
-function jumpToTrackerGoto(n, quote, occurrence, chapterId) {
+// name a different chapter by the time it's read), else by number. Landing
+// on the passage's own place when the tracker sent one, else on its words.
+function jumpToTrackerGoto(n, quote, occurrence, chapterId, span) {
   const chId = chapterId ? (book && book.chapterOrder.includes(chapterId) ? chapterId : null) : chapterIdForNumber(n);
   if (!chId) { toast(t("Chapter not found in the open manuscript.")); return; }
   // Used to close the pane here so the manuscript wasn't hidden behind it —
@@ -937,7 +956,8 @@ function jumpToTrackerGoto(n, quote, occurrence, chapterId) {
   if (!quote) return;
   const body = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
   if (!body) return;
-  const range = quoteRange(body, quote, occurrence);
+  const model = bodyTextModel(body);
+  const range = (span && spanRange(model, { quote, ...span })) || quoteRange(body, quote, occurrence, model);
   if (!range) {
     toast(t("Landed on the chapter — couldn't pinpoint the exact passage."));
     return;
@@ -1161,11 +1181,36 @@ function renderPalette() {
   });
 }
 
+// The references already on the selected words (or overlapping them),
+// offered first: Enter makes the selection that entity's reference — the
+// way to put a reference right when the typing has pulled it askew.
+async function loadPaletteRepins() {
+  if (!palette || !trackerReadyUrl) return;
+  const { saved } = palette;
+  if (!saved || saved.start === undefined) return;
+  const chId = saved.body.closest('.chapter')?.dataset.id;
+  if (!chId || !isStoryChapter(chId)) return;
+  let reply;
+  try { reply = await (await fetch(trackerReadyUrl + '__references')).json(); } catch { return; }
+  if (!palette || palette.saved !== saved || !reply) return;
+  const byId = reply.byChapterId;
+  const refs = byId && Object.keys(byId).length ? (byId[chId] || []) : ((reply.byChapter || {})[storyIndex(chId)] || []);
+  // each passage as a Range in the text as it is now — the tracker's place
+  // for it when that still reads its words, else its words searched for —
+  // so typing since the tracker last saw the chapter can't shift the test
+  const overlaps = (range) => saved.range.compareBoundaryPoints(Range.END_TO_START, range) < 0 && saved.range.compareBoundaryPoints(Range.START_TO_END, range) > 0;
+  palette.repins = findTrackerRefs(saved.body, refs).filter((entry) => entry.passage && overlaps(entry.range))
+    .flatMap((entry) => entry.entities.map((x) => ({ repin: true, passage: entry.passage, kind: x.kind, id: x.id, name: x.name, label: t('make the selection its reference') })));
+}
+
 async function searchPalette() {
   if (!palette || !trackerReadyUrl) return;
   const q = palette.input.value.trim();
   const seq = ++palette.seq;
-  if (q.length < 2) { palette.hits = []; palette.note = null; renderPalette(); return; }
+  // offered while the query is still the selected words: typed over, the
+  // author is looking for something else to file the selection on
+  const repins = palette.saved && q.toLowerCase() === palette.saved.text.toLowerCase() ? palette.repins || [] : [];
+  if (q.length < 2) { palette.hits = repins; palette.note = null; renderPalette(); return; }
   let hits = [];
   let down = false; // "No matches" would read as "no such entry"
   try {
@@ -1173,10 +1218,28 @@ async function searchPalette() {
     hits = Array.isArray(reply.hits) ? reply.hits : [];
   } catch { down = true; }
   if (!palette || seq !== palette.seq) return; // closed, or typed past
-  palette.hits = hits;
+  palette.hits = [...repins, ...hits];
   palette.active = 0;
-  palette.note = down ? t("The tracker isn't answering right now") : hits.length ? null : t('No matches');
+  palette.note = down ? t("The tracker isn't answering right now") : palette.hits.length ? null : t('No matches');
   renderPalette();
+}
+
+// A re-pin hit chosen: the tracker moves that entity's reference to the
+// selected words, and the tint follows.
+async function repinFromPalette(hit) {
+  const { saved } = palette;
+  const chId = saved.body.closest('.chapter')?.dataset.id;
+  const body = { chapter: storyIndex(chId), passage: hit.passage, action: 'repin', quote: saved.text, start: saved.start, end: saved.end };
+  if (saved.occurrence && saved.occurrence > 1) body.occurrence = saved.occurrence;
+  let reply;
+  try {
+    reply = await (await fetch(trackerReadyUrl + '__passage-fix', { method: 'POST', body: JSON.stringify(body) })).json();
+  } catch { reply = { error: t('no reply from the tracker') }; }
+  if (!palette) return;
+  if (!reply || reply.error) { toast(t('Reference not moved: ') + (reply && reply.error ? reply.error : '')); return; }
+  closePalette(true);
+  toast(t('Reference moved: ') + hit.name);
+  paintTrackerRefs('version');
 }
 
 async function choosePaletteHit(open) {
@@ -1184,6 +1247,7 @@ async function choosePaletteHit(open) {
   const hit = palette.hits[palette.active];
   if (!hit) return;
   const { saved } = palette;
+  if (hit.repin && saved && !open) return repinFromPalette(hit);
   if (open || !saved) {
     closePalette(true);
     trackerFlowActive = true;
@@ -1197,6 +1261,8 @@ async function choosePaletteHit(open) {
   if (!chId || !isStoryChapter(chId)) { toast(t("Reference not added: the selection isn't in a story chapter.")); return; }
   const body = { target: hit.kind, id: hit.id, chapter: storyIndex(chId), chapterId: chId, quote: saved.text };
   if (saved.occurrence && saved.occurrence > 1) body.occurrence = saved.occurrence;
+  // where the words were selected: pinned exactly there, not at their first match
+  if (saved.start !== undefined) { body.start = saved.start; body.end = saved.end; }
   let reply;
   try {
     // No Content-Type on purpose: a text/plain body needs no preflight,
@@ -1223,7 +1289,7 @@ async function openReferencePalette() {
   el.append(input, list);
   document.body.appendChild(el);
   // focusing the input takes vim out of normal mode (app.js focusin); closing gives it back
-  palette = { el, input, list, saved, hits: [], active: 0, seq: 0, note: null, vimNav: typeof vimNav !== 'undefined' && vimNav };
+  palette = { el, input, list, saved, hits: [], repins: [], active: 0, seq: 0, note: null, vimNav: typeof vimNav !== 'undefined' && vimNav };
   input.value = saved ? saved.text : '';
   input.focus();
   input.select();
@@ -1252,6 +1318,7 @@ async function openReferencePalette() {
     if (!palette) return; // closed meanwhile
     if (!trackerReadyUrl) { closePalette(true); toast(t("The tracker isn't available right now.")); return; }
   }
+  await loadPaletteRepins();
   searchPalette();
 }
 
@@ -1313,10 +1380,10 @@ function findTrackerRefs(body, refs) {
   const byPassage = new Map();
   const model = bodyTextModel(body);
   for (const ref of refs) {
-    const range = quoteRange(body, ref.quote, ref.occurrence, model);
+    const range = spanRange(model, ref) || quoteRange(body, ref.quote, ref.occurrence, model);
     if (!range) continue;
     const at = model.posOf(range.startContainer, range.startOffset) + ':' + range.toString().length;
-    const entry = byPassage.get(at) || { range, extra: true, entities: [] };
+    const entry = byPassage.get(at) || { range, extra: true, entities: [], passage: ref.passage };
     if (!ref.extra) entry.extra = false;
     if (!entry.entities.some((x) => x.kind === ref.kind && x.id === ref.id)) {
       entry.entities.push({ kind: ref.kind, id: ref.id, name: ref.name, label: ref.label });
@@ -1335,16 +1402,16 @@ function caretChapterId() {
   return chapter ? chapter.dataset.id : null;
 }
 
-// `reason` is 'version' (the tracker wrote: fetch the references again,
-// search the chapters whose references changed) or 'settle' (typing
-// paused: search the chapter with the caret, no fetch). One paint at a
-// time; a request made during one runs after it, a 'version' outranking
-// a 'settle'.
+// `reason` is 'version' (the tracker wrote) or 'settle' (typing paused).
+// Both fetch the references again: a passage's place moves with the
+// typing without a write, and the reply carries where each one sits now.
+// One paint at a time; a request made during one runs after it, a
+// 'version' outranking a 'settle'.
 function paintTrackerRefs(reason) {
   if (!trackerRefsOn || !trackerReadyUrl || !(window.Highlight && window.CSS && CSS.highlights)) { clearTrackerRefs(); return; }
   if (trackerRefsPainting) { trackerRefsQueued = reason === 'version' ? 'version' : (trackerRefsQueued || 'settle'); return trackerRefsPainting; }
   trackerRefsPainting = (async () => {
-    if (reason === 'version' || !trackerRefsReply) {
+    {
       let reply;
       try { reply = await (await fetch(trackerReadyUrl + '__references')).json(); } catch { return; }
       if (!trackerRefsOn || !reply || !reply.byChapter) return;

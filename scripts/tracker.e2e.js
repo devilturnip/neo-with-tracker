@@ -387,7 +387,7 @@ test('a rebuild of the chapters (a reorder) paints Refs again', async () => {
   });
 });
 
-test('Refs follow a tracker write on their own, and a typing pause re-reads nothing', async () => {
+test('Refs follow a tracker write on their own, and a typing pause re-reads them (their places move)', async () => {
   await withStub(`{
     '__references': () => { window.__stub.state.refFetches += 1; return { version: window.__stub.state.version, byChapter: { 1: window.__stub.state.refs } }; },
     '__neo-mailbox': () => ({ version: window.__stub.state.version, writes: window.__stub.state.version, goto: null, wantsManuscript: false, editing: false }),
@@ -402,8 +402,29 @@ test('Refs follow a tracker write on their own, and a typing pause re-reads noth
     await js(`window.neoHooks.countersUpdated(); 0`);
     await tick(1200);
     assert.equal(await highlights(), 1, 'still tinted after a typing pause');
-    assert.equal(await js(`window.__stub.state.refFetches`), fetches, 'a typing pause re-reads nothing');
+    assert.equal(await js(`window.__stub.state.refFetches`), fetches + 1, 'a typing pause reads where the passages sit now');
   }, { version: 1, refs: [], refFetches: 0 });
+});
+
+test('Refs tint where the tracker says a passage sits, and fall back to its words when the text there has moved on', async () => {
+  const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
+  await js(`document.querySelector('.chapter-body').insertAdjacentHTML('beforeend', '<p>Hello again.</p>'); 0`);
+  // the second "Hello" by its place — the words alone would tint the first
+  const second = await js(`chapterText(document.querySelector('.chapter[data-id]').dataset.id).indexOf('Hello', 1)`);
+  assert.ok(second > 0, 'the test chapter has a second Hello');
+  try { await withStub(refsStub([
+    { passage: 'p-1', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello', start: second, end: second + 5 },
+    { passage: 'p-2', kind: 'item', id: 'stale', name: 'Stale', label: 'item', quote: 'again', start: 0, end: 5 },
+  ]), async () => {
+    await js(`setTrackerRefs(true); 0`);
+    await waitFor(`(CSS.highlights.get('neo-tracker-refs')?.size ?? 0) === 2`);
+    const tinted = await js(`[...CSS.highlights.get('neo-tracker-refs')].map((r) => bodyTextModel(document.querySelector('.chapter-body')).posOf(r.startContainer, r.startOffset) + ':' + r.toString()).sort()`);
+    assert.equal(tinted.find((t) => t.endsWith(':Hello')), second + ':Hello', 'tinted at the place given, not the first match');
+    assert.equal(tinted.some((t) => t.endsWith(':again')), true, 'a span that no longer reads its words: the words are found instead');
+    await js(`setTrackerRefs(false); 0`);
+  }); } finally {
+    await js(`document.querySelector('.chapter-body').innerHTML = ${JSON.stringify(saved)}; 0`);
+  }
 });
 
 test('Alt+Shift+D adds the event passages, in their own highlight', async () => {
@@ -843,9 +864,35 @@ test('Ctrl+D opens the palette prefilled with the selection; Enter files it and 
     assert.equal(await js(`document.querySelectorAll('#tracker-palette li').length`), 1);
     await js(`document.querySelector('#tracker-palette input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`);
     await waitFor(`!document.getElementById('tracker-palette')`);
-    assert.deepEqual((await calls('__quick-reference')).map((c) => JSON.parse(c.body)), [{ target: 'item', id: 'sword', chapter: 1, chapterId: await chapterId(), quote: 'Hello' }]);
+    assert.deepEqual((await calls('__quick-reference')).map((c) => JSON.parse(c.body)), [{ target: 'item', id: 'sword', chapter: 1, chapterId: await chapterId(), quote: 'Hello', start: 0, end: 5 }]);
     assert.equal(await js(`getSelection().toString()`), 'Hello', 'the selection is back');
     assert.equal(await js(`document.activeElement === document.querySelector('.chapter-body')`), true, 'and so is focus');
+  });
+});
+
+test('Ctrl+D over a referenced passage offers to make the selection its reference first; Enter re-pins it', async () => {
+  await withStub(`{
+    '__references': () => ({ version: 1, byChapter: { 1: [{ passage: 'p-1', kind: 'item', id: 'hello', name: 'Hello Sword', label: 'item', quote: 'Hello', start: 0, end: 5 }] } }),
+    '__search': { hits: [{ kind: 'item', id: 'sword', name: 'Sword', label: 'item' }] },
+    '__passage-fix': { ok: true, passage: { id: 'p-1' } },
+    ${mailbox()},
+  }`, async () => {
+    assert.equal(await selectHello(), 'Hello');
+    await ctrlD();
+    await waitFor(`document.querySelector('#tracker-palette li.active .tp-name')?.textContent === 'Hello Sword'`);
+    assert.deepEqual(await js(`[...document.querySelectorAll('#tracker-palette li .tp-name')].map((n) => n.textContent)`), ['Hello Sword', 'Sword'], 'the re-pin first, then the search');
+    // typed over: the author is filing the selection on something else — no re-pin offered
+    const type = (value) => js(`(() => { const i = document.querySelector('#tracker-palette input'); i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event('input')); return 0; })()`);
+    await type('sw');
+    await tick(200);
+    assert.deepEqual(await js(`[...document.querySelectorAll('#tracker-palette li .tp-name')].map((n) => n.textContent)`), ['Sword']);
+    await type('Hello');
+    await waitFor(`document.querySelector('#tracker-palette li.active .tp-name')?.textContent === 'Hello Sword'`);
+    await js(`document.querySelector('#tracker-palette input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`);
+    await waitFor(`!document.getElementById('tracker-palette')`);
+    assert.deepEqual((await calls('__passage-fix')).map((c) => JSON.parse(c.body)), [{ chapter: 1, passage: 'p-1', action: 'repin', quote: 'Hello', start: 0, end: 5 }]);
+    assert.equal((await calls('__quick-reference')).length, 0, 'nothing filed anew');
+    assert.equal(await js(`getSelection().toString()`), 'Hello', 'the selection is back');
   });
 });
 
@@ -940,6 +987,8 @@ async function main() {
   try {
     while (!(win = BrowserWindow.getAllWindows()[0])) await tick(50);
     wc = win.webContents;
+    // an error thrown in the page is otherwise only "Script failed to execute"
+    wc.on('console-message', (e) => { if (e.level === 'error') console.log('     [renderer] ' + e.message); });
     while (!(await js(`typeof library !== 'undefined' && !!library`).catch(() => false))) await tick(50);
     // Hermetic, and before the book opens (showing the Manuscript tab runs
     // the pane's ensure): the real one would ping or spawn the real tracker,
@@ -960,7 +1009,10 @@ async function main() {
     await waitFor(`document.querySelector('.chapter[data-id] .chapter-body')`, 10000);
     if (await js(`trackerReadyUrl`)) throw new Error('the real tracker was reached at book open: the harness is not hermetic');
     win.focus();
-    for (const t of tests) {
+    // NEO_E2E_ONLY=<part of a name> runs the tests whose name has it
+    const only = process.env.NEO_E2E_ONLY || '';
+    const chosen = tests.filter((x) => x.name.includes(only));
+    for (const t of chosen) {
       try {
         win.focus(); // the window can lose OS focus mid-run, which would correctly auto-close an unpinned pane
         await reset();
@@ -971,7 +1023,7 @@ async function main() {
         console.log('FAIL ' + t.name + '\n     ' + String(err && err.message || err).replace(/\n/g, '\n     '));
       }
     }
-    console.log(`\n${tests.length - failed} passed, ${failed} failed`);
+    console.log(`\n${chosen.length - failed} passed, ${failed} failed`);
   } catch (err) {
     failed++;
     console.log('FAIL setup\n     ' + String(err && err.stack || err).replace(/\n/g, '\n     '));
