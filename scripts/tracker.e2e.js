@@ -896,6 +896,22 @@ test('Ctrl+D over a referenced passage offers to make the selection its referenc
   });
 });
 
+test('Ctrl+D over the point a removed reference left offers to put it back there', async () => {
+  await withStub(`{
+    '__references': () => ({ version: 1, byChapter: { 1: [{ passage: 'p-9', kind: 'monster', id: 'rose', name: 'Stone Rose', label: 'monster', quote: 'Hellos', point: 5 }] } }),
+    '__search': { hits: [] },
+    '__passage-fix': { ok: true, passage: { id: 'p-9' } },
+    ${mailbox()},
+  }`, async () => {
+    assert.equal(await selectHello(), 'Hello');
+    await ctrlD();
+    await waitFor(`document.querySelector('#tracker-palette li.active .tp-name')?.textContent === 'Stone Rose'`);
+    await js(`document.querySelector('#tracker-palette input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`);
+    await waitFor(`!document.getElementById('tracker-palette')`);
+    assert.deepEqual((await calls('__passage-fix')).map((c) => JSON.parse(c.body)), [{ chapter: 1, passage: 'p-9', action: 'repin', quote: 'Hello', start: 0, end: 5 }]);
+  });
+});
+
 test('Ctrl+D in vim normal mode opens the palette, and Escape gives normal mode back with the selection', async () => {
   await withStub(paletteStub, async () => {
     await js(`vimEnabled = true; 0`);

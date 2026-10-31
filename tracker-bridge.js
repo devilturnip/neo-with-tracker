@@ -1199,8 +1199,19 @@ async function loadPaletteRepins() {
   // for it when that still reads its words, else its words searched for —
   // so typing since the tracker last saw the chapter can't shift the test
   const overlaps = (range) => saved.range.compareBoundaryPoints(Range.END_TO_START, range) < 0 && saved.range.compareBoundaryPoints(Range.START_TO_END, range) > 0;
+  const hit = (passage, x) => ({ repin: true, passage, kind: x.kind, id: x.id, name: x.name, label: t('make the selection its reference') });
   palette.repins = findTrackerRefs(saved.body, refs).filter((entry) => entry.passage && overlaps(entry.range))
-    .flatMap((entry) => entry.entities.map((x) => ({ repin: true, passage: entry.passage, kind: x.kind, id: x.id, name: x.name, label: t('make the selection its reference') })));
+    .flatMap((entry) => entry.entities.map((x) => hit(entry.passage, x)));
+  // a reference whose words are gone from the text, the point where they
+  // were inside the selection or at its edge: offered too, to put it back
+  const seen = new Set(palette.repins.map((h) => h.passage + '|' + h.kind + ':' + h.id));
+  for (const r of refs) {
+    if (typeof r.point !== 'number' || r.point < saved.start || r.point > saved.end) continue;
+    const k = r.passage + '|' + r.kind + ':' + r.id;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    palette.repins.push(hit(r.passage, r));
+  }
 }
 
 async function searchPalette() {
