@@ -557,6 +557,56 @@ test('a cursor moved with no typing reaches the tracker at once; one moved while
   });
 });
 
+test('scrolling into another chapter reaches the tracker while the page still moves, not after it stops', async () => {
+  await withStub(`{}`, async () => {
+    // a second story chapter below a tall first one, as the DOM and the book have it
+    await js(`(() => {
+      book.chapterOrder.push('ch-test-scroll');
+      book.chapterKinds = book.chapterKinds || {}; book.chapterKinds['ch-test-scroll'] = 'chapter';
+      const first = document.querySelector('#chapters .chapter');
+      first.style.minHeight = '3000px';
+      const sec = document.createElement('section'); sec.className = 'chapter'; sec.dataset.id = 'ch-test-scroll'; sec.style.minHeight = '3000px';
+      first.after(sec);
+      document.querySelector('#paper-scroll').scrollTop = 0;
+      return 0;
+    })()`);
+    try {
+      await tick(300);
+      await js(`trackerNotifiedChapter = currentChapterId; 0`);
+      await clearCalls();
+      // a glide: a step every 16 ms for 600 ms, past the second chapter's top
+      const result = await js(`(async () => {
+        const paper = document.querySelector('#paper-scroll');
+        // the boundary is crossed about two thirds of the way along
+        const top = document.querySelector('[data-id="ch-test-scroll"]').getBoundingClientRect().top - window.innerHeight * 0.4;
+        const target = top * 1.5;
+        const posted = () => window.__stub.calls.some((c) => c.url.includes('__neo-chapter') && c.url.includes('ch-test-scroll'));
+        const t = performance.now();
+        let seen = -1;
+        for (let i = 1; i <= 38; i++) {
+          paper.scrollTop = target * i / 38 + i; // still moving at the end
+          await new Promise((r) => setTimeout(r, 16));
+          if (seen < 0 && posted()) seen = performance.now() - t;
+        }
+        return { seen, total: performance.now() - t };
+      })()`);
+      assert.ok(result.seen >= 0 && result.seen < result.total, 'told while scrolling (' + Math.round(result.seen) + ' of ' + Math.round(result.total) + ' ms)');
+      const urls = (await calls('__neo-chapter')).map((c) => c.url);
+      assert.equal(urls.filter((u) => u.includes('ch-test-scroll')).length, 1, 'told once');
+    } finally {
+      await js(`(() => {
+        document.querySelector('[data-id="ch-test-scroll"]')?.remove();
+        document.querySelector('#chapters .chapter').style.minHeight = '';
+        book.chapterOrder = book.chapterOrder.filter((id) => id !== 'ch-test-scroll');
+        delete book.chapterKinds['ch-test-scroll'];
+        document.querySelector('#paper-scroll').scrollTop = 0;
+        return 0;
+      })()`);
+      await tick(300);
+    }
+  });
+});
+
 test('pushes leave in order: the chapter text before the selection made in it', async () => {
   await withStub(`{
     '__neo-manuscript-text': () => new Promise((resolve) => setTimeout(() => { window.__stub.state.order.push('text'); resolve({}); }, 150)),

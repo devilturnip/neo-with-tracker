@@ -312,6 +312,32 @@ function notifyTrackerOfChapter(immediate) {
   else trackerNotifyTimer = setTimeout(go, 400);
 }
 
+// Scrolling: NEO settles on the chapter 120 ms after the scroll stops
+// (app.js), and a wheel's or a trackpad's glide runs on well past the
+// hand — the tracker would wait for all of it. It's told here instead,
+// at most every 100 ms while the page still moves, by NEO's own rule (the
+// last chapter whose top is above 40% of the window). NEO then settles
+// on the same chapter and finds the tracker already told.
+let trackerScrolledAt = -Infinity;
+let trackerScrollTimer = null;
+function followScrolledChapter() {
+  trackerScrolledAt = performance.now();
+  if (!trackerReadyUrl || !book || currentTab !== 'manuscript') return;
+  const mid = window.innerHeight * 0.4;
+  let best = null;
+  for (const sec of document.querySelectorAll('.chapter')) {
+    if (sec.getBoundingClientRect().top < mid) best = sec.dataset.id;
+  }
+  if (!best || best === trackerNotifiedChapter || !isStoryChapter(best)) return;
+  trackerNotifiedChapter = best;
+  trackerPost('__neo-chapter?n=' + storyIndex(best) + '&id=' + encodeURIComponent(best));
+}
+$('#paper-scroll').addEventListener('scroll', () => {
+  const since = performance.now() - trackerScrolledAt;
+  if (since >= 100) { clearTimeout(trackerScrollTimer); trackerScrollTimer = null; followScrolledChapter(); }
+  else if (!trackerScrollTimer) trackerScrollTimer = setTimeout(() => { trackerScrollTimer = null; followScrolledChapter(); }, 100 - since);
+}, { passive: true });
+
 // Same reasoning and shape as notifyTrackerOfChapter above, for the word
 // count of whatever chapter is currently being written — called from
 // updateCounters() (the countersUpdated hook), so it rides along with every
