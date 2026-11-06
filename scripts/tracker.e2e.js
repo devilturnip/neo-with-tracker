@@ -163,6 +163,7 @@ const reset = () => js(`(() => {
   document.getElementById('tracker-link').className = 'up'; trackerCountsSentFor = null;
   clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); clearTimeout(trackerEditingLapse);
   clearTimeout(trackerUpdateTimer); trackerUpdateTimer = null; trackerRestarting = false; trackerPageBusyUntil = 0;
+  if (window.echoTools) window.echoTools.clearMarks();
   clearTimeout(trackerNotifyTimer); clearTimeout(trackerNotifyWordsTimer); return 0;
 })()`);
 
@@ -1000,6 +1001,40 @@ const pasteAtEnd = (html, text) => js(`(() => {
     .dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   return [...body.querySelectorAll('p')].map((x) => [x.className, x.textContent, !!x.querySelector('i')]);
 })()`);
+
+/* ================================================================== */
+/*  Echoes                                                              */
+/* ================================================================== */
+
+test('Echoes lists a word repeated close together, only when opened; a row clicked lights every instance, the pane closed clears them', async () => {
+  const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
+  try {
+    await js(`(() => {
+      const b = document.querySelector('.chapter-body');
+      b.innerHTML = '<p>The orc glared at Jake. Jake glared back and the orc glared again.</p><p>Nothing else happened for a while.</p>';
+      syncChapter(b, b.closest('.chapter').dataset.id);
+      currentChapterId = b.closest('.chapter').dataset.id;
+      return 0;
+    })()`);
+    await withStub(`{ '__names': { names: ['Jake'] }, ${mailbox()} }`, async () => {
+      assert.equal(await js(`document.getElementById('echo-pane-body').children.length`), 0, 'nothing counted before the panel opens');
+      await js(`document.getElementById('echo-toggle').click(); 0`);
+      await waitFor(`document.querySelector('#echo-pane-body .echo-row')`);
+      assert.equal(await js(`document.getElementById('side-pane').dataset.mode`), 'echoes');
+      const rows = await js(`[...document.querySelectorAll('#echo-pane-body .echo-row b')].map((b) => b.textContent)`);
+      assert.ok(rows.includes('glared'), 'glared ×3 within the window: ' + rows.join(','));
+      assert.ok(!rows.includes('Jake'), "the tracker's names are left out");
+      assert.equal(await js(`CSS.highlights.has('neo-echo')`), false, 'nothing lit until a row is clicked');
+      await js(`[...document.querySelectorAll('#echo-pane-body .echo-row')].find((r) => r.querySelector('b').textContent === 'glared').querySelector('.echo-main').click(); 0`);
+      await waitFor(`(CSS.highlights.get('neo-echo')?.size ?? 0) === 3`);
+      assert.deepEqual(await js(`[...CSS.highlights.get('neo-echo')].map((r) => r.toString())`), ['glared', 'glared', 'glared']);
+      await js(`closeSidePane(); 0`);
+      await waitFor(`!CSS.highlights.has('neo-echo')`);
+    });
+  } finally {
+    await js(`(() => { const b = document.querySelector('.chapter-body'); b.innerHTML = ${JSON.stringify(saved)}; syncChapter(b, b.closest('.chapter').dataset.id); return 0; })()`);
+  }
+});
 
 test('⧉ Royal Road copies the chapter with prose as paragraphs and each stat block as one boxed table', async () => {
   const saved = await js(`document.querySelector('.chapter-body').innerHTML`);

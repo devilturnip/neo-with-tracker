@@ -79,6 +79,33 @@ body.light #tracker-refs-toggle.active { color: var(--accent); }
 #side-pane[data-mode="tracker"] #side-cards,
 #side-pane[data-mode="tracker"] .side-title-notes { display: none; }
 #tracker-pane-body, .side-title-tracker { display: none; }
+/* the Echoes panel (writing-tools.js): the pane's third mode */
+#echo-pane-body, .side-title-echoes { display: none; }
+#side-pane[data-mode="echoes"] #sticky-list, #side-pane[data-mode="echoes"] #side-cards, #side-pane[data-mode="echoes"] .side-title-notes { display: none; }
+#side-pane[data-mode="echoes"] #echo-pane-body { display: block; padding: 0 16px 20px; color: var(--muted); font-size: 13px; overflow-y: auto; height: 100%; }
+#side-pane[data-mode="echoes"] .side-title-echoes { display: inline; }
+#echo-toggle { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: 10px; }
+#echo-toggle:hover { color: #ddd; }
+#echo-toggle.active { color: var(--accent); }
+#echo-toggle[hidden] { display: none; }
+.ui-zoomed #echo-toggle { white-space: nowrap; }
+body.light #echo-toggle:hover { color: #1c1a17; }
+body.light #echo-toggle.active { color: var(--accent); }
+.echo-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; margin: 10px 0; }
+.echo-bar select { font-size: 12px; }
+.echo-count { margin-left: auto; opacity: 0.7; }
+#echo-pane-body h3 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin: 14px 0 4px; color: var(--muted); }
+.echo-empty { opacity: 0.7; font-size: 12px; }
+.echo-list { list-style: none; margin: 0; padding: 0; }
+.echo-row { display: flex; align-items: center; gap: 6px; }
+.echo-main { flex: 1; text-align: left; background: none; border: none; color: inherit; font: inherit; padding: 3px 4px; cursor: pointer; border-radius: 4px; }
+.echo-main:hover, .echo-row.on .echo-main { background: rgba(122, 150, 230, 0.16); color: #ddd; }
+.echo-detail { opacity: 0.7; font-size: 12px; }
+.echo-ignore { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 4px; }
+.echo-ignore:hover { color: #ddd; }
+.echo-ignored { font-size: 11px; opacity: 0.7; margin-top: 12px; }
+::highlight(neo-echo) { background-color: rgba(230, 180, 60, 0.35); }
+body.light .echo-main:hover, body.light .echo-row.on .echo-main { color: #1c1a17; }
 #side-pane[data-mode="tracker"] #tracker-pane-body { display: block; height: 100%; padding: 0 20px; color: var(--muted); font-size: 13px; }
 #side-pane[data-mode="tracker"] .side-title-tracker { display: inline; }
 /* dark, not white: this is what shows while the cross-origin page has no frame
