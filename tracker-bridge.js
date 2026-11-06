@@ -1567,34 +1567,80 @@ try {
   if (localStorage.getItem('neo-tracker-refs') === '1') setTrackerRefs(true, localStorage.getItem('neo-tracker-refs-extra') === '1');
 } catch { /* nothing kept */ }
 
-// The hover label.
+// The hover label: each entity's name, and under it a moment later what
+// the record says of it at that passage (a character's HP and level, an
+// item's whereabouts, who holds an ability or quest), asked of the tracker
+// once per passage and kept until the record changes.
 let trackerRefTip = null;
 let trackerRefTipFrame = 0;
+let trackerRefTipShowing = null; // the passage key the tip is up for
+let trackerStateTimer = null;
+const trackerStateLines = new Map(); // `${version}|${chapterId}|${passage}|${kind}:${id}` -> line
 function hideTrackerRefTip() {
   if (trackerRefTip) trackerRefTip.hidden = true;
+  trackerRefTipShowing = null;
+  clearTimeout(trackerStateTimer);
 }
 const entityLine = (x) => x.name + ' (' + x.label + ')';
-function showTrackerRefTip(entities, x, y) {
+function showTrackerRefTip(entities, x, y, at) {
   if (!trackerRefTip) {
     trackerRefTip = document.createElement('div');
     trackerRefTip.id = 'tracker-refs-tip';
     document.body.appendChild(trackerRefTip);
   }
+  const key = at ? at.chapterId + '|' + at.passage : null;
+  const same = key !== null && key === trackerRefTipShowing && !trackerRefTip.hidden;
+  if (same) { placeTrackerRefTip(x, y); return; } // the state lines stay as they are
+  trackerRefTipShowing = key;
+  clearTimeout(trackerStateTimer);
   trackerRefTip.textContent = '';
   for (const entity of entities) {
     const line = document.createElement('div');
     line.textContent = entityLine(entity);
+    const held = key && trackerStateLines.get(trackerRefsVersion + '|' + key + '|' + entity.kind + ':' + entity.id);
+    if (held) { const s = document.createElement('div'); s.className = 'tr-state'; s.textContent = held; line.appendChild(s); }
     trackerRefTip.appendChild(line);
+  }
+  if (key && entities.some((e) => !trackerStateLines.has(trackerRefsVersion + '|' + key + '|' + e.kind + ':' + e.id))) {
+    trackerStateTimer = setTimeout(() => fillTrackerStateLines(key, at, entities), 120);
   }
   const hint = document.createElement('div');
   hint.className = 'tr-hint';
   hint.textContent = t(IS_MAC ? '⌘-click to open' : 'Ctrl+click to open');
   trackerRefTip.appendChild(hint);
   trackerRefTip.hidden = false;
-  // beside the cursor, kept inside the window
+  placeTrackerRefTip(x, y);
+}
+// beside the cursor, kept inside the window
+function placeTrackerRefTip(x, y) {
   const w = trackerRefTip.offsetWidth, h = trackerRefTip.offsetHeight;
   trackerRefTip.style.left = Math.min(x + 14, window.innerWidth - w - 8) + 'px';
   trackerRefTip.style.top = (y + 18 + h > window.innerHeight ? y - h - 10 : y + 18) + 'px';
+}
+// The state lines for the tip up now, each fetched once (kept per record
+// version) and put under its entity's name while that tip is still up.
+async function fillTrackerStateLines(key, at, entities) {
+  if (!trackerReadyUrl) return;
+  const version = trackerRefsVersion;
+  await Promise.all(entities.map(async (entity) => {
+    const cacheKey = version + '|' + key + '|' + entity.kind + ':' + entity.id;
+    if (trackerStateLines.has(cacheKey)) return;
+    let line = '';
+    try {
+      const q = 'chapterId=' + encodeURIComponent(at.chapterId) + '&chapter=' + storyIndex(at.chapterId) + '&passage=' + encodeURIComponent(at.passage)
+        + '&kind=' + encodeURIComponent(entity.kind) + '&id=' + encodeURIComponent(entity.id);
+      const reply = await (await fetch(trackerReadyUrl + '__state-at?' + q)).json();
+      line = reply && typeof reply.line === 'string' ? reply.line : '';
+    } catch { return; } // asked again on the next hover
+    trackerStateLines.set(cacheKey, line);
+    if (!line || !trackerRefTip || trackerRefTip.hidden || trackerRefTipShowing !== key) return;
+    const row = [...trackerRefTip.children].find((el) => el.firstChild && el.firstChild.textContent === entityLine(entity));
+    if (!row || row.querySelector('.tr-state')) return;
+    const s = document.createElement('div');
+    s.className = 'tr-state';
+    s.textContent = line;
+    row.appendChild(s);
+  }));
 }
 function caretAt(x, y) {
   if (document.caretPositionFromPoint) {
@@ -1605,18 +1651,21 @@ function caretAt(x, y) {
   return r ? { node: r.startContainer, offset: r.startOffset } : null;
 }
 // The entities referencing whatever passage is under a point, deduplicated —
-// shared by the hover label and the Ctrl+click.
+// shared by the hover label and the Ctrl+click. `found.where` names the
+// passage and its chapter (not a darling's), for the state lines.
 function trackerRefsAt(x, y, target) {
   if (!trackerRefsOn || !trackerRefsPainted.length) return [];
   if (!target || !target.closest || !(target.closest('.chapter-body') || target.closest('#darlings-list .darling-text'))) return [];
   const caret = caretAt(x, y);
   if (!caret) return [];
   const found = [];
-  for (const { range, entities } of trackerRefsPainted) {
+  const chapter = target.closest('.chapter[data-id]');
+  for (const { range, entities, passage } of trackerRefsPainted) {
     let hit = false;
     try { hit = range.isPointInRange(caret.node, caret.offset); } catch { hit = false; }
     // the caret can sit just past the last character; count the passage's own end as outside
     if (!hit || (caret.node === range.endContainer && caret.offset === range.endOffset)) continue;
+    if (chapter && passage && !found.where) found.where = { chapterId: chapter.dataset.id, passage };
     for (const entity of entities) {
       if (!found.some((f) => f.kind === entity.kind && f.id === entity.id)) found.push(entity);
     }
@@ -1630,7 +1679,7 @@ document.addEventListener('mousemove', (e) => {
   cancelAnimationFrame(trackerRefTipFrame);
   trackerRefTipFrame = requestAnimationFrame(() => {
     const entities = trackerRefsAt(x, y, target);
-    if (entities.length) showTrackerRefTip(entities, x, y);
+    if (entities.length) showTrackerRefTip(entities, x, y, entities.where);
     else hideTrackerRefTip();
   });
 });

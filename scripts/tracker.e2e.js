@@ -361,6 +361,29 @@ test('Refs tints referenced passages, names them on hover, and Alt+D turns it of
   });
 });
 
+test('hovering a tinted passage adds what the record says of it there, asked once per passage', async () => {
+  await withStub(`{
+    '__references': () => ({ version: 1, byChapter: { 1: [{ passage: 'p-1', kind: 'character', id: 'jake', name: 'Jake', label: 'character', quote: 'Hello', start: 0, end: 5 }] } }),
+    '__state-at': () => { window.__stub.state.asked += 1; return { line: 'HP 38/40 · LV 7' }; },
+    ${mailbox()},
+  }`, async () => {
+    await js(`setTrackerRefs(true); 0`);
+    await waitFor(`(CSS.highlights.get('neo-tracker-refs')?.size ?? 0) === 1`);
+    const p = await helloPoint();
+    await tick(100);
+    const hover = () => js(`document.querySelector('.chapter-body').dispatchEvent(new MouseEvent('mousemove', { clientX: ${p.x}, clientY: ${p.y}, bubbles: true }))`);
+    await hover();
+    await waitFor(`document.querySelector('#tracker-refs-tip .tr-state')?.textContent === 'HP 38/40 · LV 7'`);
+    assert.equal(await js(`document.getElementById('tracker-refs-tip').firstChild.firstChild.textContent`), 'Jake (character)', 'the name first, the state under it');
+    const asked = (await calls('__state-at'));
+    assert.equal(asked.length, 1);
+    assert.match(asked[0].url, /chapterId=.*&passage=p-1&kind=character&id=jake/);
+    await hover(); await hover(); await tick(200);
+    assert.equal((await calls('__state-at')).length, 1, 'kept, not asked again');
+    await js(`setTrackerRefs(false); 0`);
+  }, { asked: 0 });
+});
+
 test('Refs read the text as the tracker holds it: a quote across two paragraphs is tinted, a ghost note is not counted', async () => {
   const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
   await js(`document.querySelector('.chapter-body').insertAdjacentHTML('beforeend', '<p class="ghost">Hello ghost</p><p>Hello again.</p>'); 0`);

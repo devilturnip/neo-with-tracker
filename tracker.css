@@ -34,6 +34,7 @@ body.light ::highlight(neo-tracker-refs-extra) {
 }
 #tracker-refs-tip[hidden] { display: none; }
 #tracker-refs-tip .tr-hint { margin-top: 3px; color: var(--muted); font-size: 11px; }
+#tracker-refs-tip .tr-state { color: var(--muted); font-size: 11px; }
 body.light #tracker-refs-tip { background: #fff; border-color: #d9d4ca; color: #2b2926; box-shadow: 0 6px 20px rgba(0,0,0,0.14); }
 /* the bottombar toggle, beside Stickies and styled like it */
 #tracker-refs-toggle { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: 10px; }
