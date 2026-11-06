@@ -1575,11 +1575,13 @@ let trackerRefTip = null;
 let trackerRefTipFrame = 0;
 let trackerRefTipShowing = null; // the passage key the tip is up for
 let trackerStateTimer = null;
-const trackerStateLines = new Map(); // `${version}|${chapterId}|${passage}|${kind}:${id}` -> line
+const trackerStateLines = new Map(); // `${version}|${chapterId}|${passage}|${kind}:${id}` -> line, for the record version it was read at
+let trackerStateLinesVersion = null;
 function hideTrackerRefTip() {
   if (trackerRefTip) trackerRefTip.hidden = true;
   trackerRefTipShowing = null;
   clearTimeout(trackerStateTimer);
+  trackerStateTimer = null;
 }
 const entityLine = (x) => x.name + ' (' + x.label + ')';
 function showTrackerRefTip(entities, x, y, at) {
@@ -1588,22 +1590,30 @@ function showTrackerRefTip(entities, x, y, at) {
     trackerRefTip.id = 'tracker-refs-tip';
     document.body.appendChild(trackerRefTip);
   }
+  if (trackerStateLinesVersion !== trackerRefsVersion) { trackerStateLines.clear(); trackerStateLinesVersion = trackerRefsVersion; }
   const key = at ? at.chapterId + '|' + at.passage : null;
-  const same = key !== null && key === trackerRefTipShowing && !trackerRefTip.hidden;
-  if (same) { placeTrackerRefTip(x, y); return; } // the state lines stay as they are
-  trackerRefTipShowing = key;
+  const lineKey = (entity) => trackerRefsVersion + '|' + key + '|' + entity.kind + ':' + entity.id;
+  const missing = () => key && entities.some((e) => !trackerStateLines.has(lineKey(e)));
+  // the same passage, the same entities, the same record: the tip stays, only moved — a line
+  // still missing (the tracker was away when it was asked) is asked for again
+  const shown = key !== null ? key + '|' + trackerRefsVersion + '|' + entities.map((e) => e.kind + ':' + e.id).join(',') : null;
+  if (shown !== null && shown === trackerRefTipShowing && !trackerRefTip.hidden) {
+    placeTrackerRefTip(x, y);
+    if (missing() && !trackerStateTimer) trackerStateTimer = setTimeout(() => { trackerStateTimer = null; fillTrackerStateLines(key, at, entities); }, 120);
+    return;
+  }
+  trackerRefTipShowing = shown;
   clearTimeout(trackerStateTimer);
+  trackerStateTimer = null;
   trackerRefTip.textContent = '';
   for (const entity of entities) {
     const line = document.createElement('div');
     line.textContent = entityLine(entity);
-    const held = key && trackerStateLines.get(trackerRefsVersion + '|' + key + '|' + entity.kind + ':' + entity.id);
+    const held = key && trackerStateLines.get(lineKey(entity));
     if (held) { const s = document.createElement('div'); s.className = 'tr-state'; s.textContent = held; line.appendChild(s); }
     trackerRefTip.appendChild(line);
   }
-  if (key && entities.some((e) => !trackerStateLines.has(trackerRefsVersion + '|' + key + '|' + e.kind + ':' + e.id))) {
-    trackerStateTimer = setTimeout(() => fillTrackerStateLines(key, at, entities), 120);
-  }
+  if (missing()) trackerStateTimer = setTimeout(() => { trackerStateTimer = null; fillTrackerStateLines(key, at, entities); }, 120);
   const hint = document.createElement('div');
   hint.className = 'tr-hint';
   hint.textContent = t(IS_MAC ? '⌘-click to open' : 'Ctrl+click to open');
@@ -1633,7 +1643,7 @@ async function fillTrackerStateLines(key, at, entities) {
       line = reply && typeof reply.line === 'string' ? reply.line : '';
     } catch { return; } // asked again on the next hover
     trackerStateLines.set(cacheKey, line);
-    if (!line || !trackerRefTip || trackerRefTip.hidden || trackerRefTipShowing !== key) return;
+    if (!line || !trackerRefTip || trackerRefTip.hidden || !trackerRefTipShowing || !trackerRefTipShowing.startsWith(key + '|')) return;
     const row = [...trackerRefTip.children].find((el) => el.firstChild && el.firstChild.textContent === entityLine(entity));
     if (!row || row.querySelector('.tr-state')) return;
     const s = document.createElement('div');
