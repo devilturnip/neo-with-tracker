@@ -41,6 +41,11 @@ body.light #tracker-refs-tip { background: #fff; border-color: #d9d4ca; color: #
 #tracker-refs-toggle:hover { color: #ddd; }
 #tracker-refs-toggle.active { color: var(--accent); }
 .ui-zoomed #tracker-refs-toggle { white-space: nowrap; }
+#tracker-rr-copy { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: 10px; }
+#tracker-rr-copy:hover { color: #ddd; }
+#tracker-rr-copy[hidden] { display: none; }
+.ui-zoomed #tracker-rr-copy { white-space: nowrap; }
+body.light #tracker-rr-copy:hover { color: #1c1a17; }
 body.light #tracker-refs-toggle:hover { color: #1c1a17; }
 body.light #tracker-refs-toggle.active { color: var(--accent); }
 

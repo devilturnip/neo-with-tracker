@@ -1001,6 +1001,34 @@ const pasteAtEnd = (html, text) => js(`(() => {
   return [...body.querySelectorAll('p')].map((x) => [x.className, x.textContent, !!x.querySelector('i')]);
 })()`);
 
+test('⧉ Royal Road copies the chapter with prose as paragraphs and each stat block as one boxed table', async () => {
+  const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
+  try {
+    await js(`(() => {
+      const b = document.querySelector('.chapter-body');
+      b.innerHTML = '<p>Jake <i>drew</i> the <b>blade</b>.</p><p class="poetry">LV 11</p><p class="poetry">HP: 40/40</p><p class="scene-break">***</p><p>Later &amp; after.</p>';
+      syncChapter(b, b.closest('.chapter').dataset.id);
+      window.__clip = null;
+      window.__clipWrite = navigator.clipboard.write;
+      navigator.clipboard.write = async (items) => { const it = items[0]; window.__clip = { html: await (await it.getType('text/html')).text(), text: await (await it.getType('text/plain')).text() }; };
+      return 0;
+    })()`);
+    await js(`currentChapterId = document.querySelector('.chapter[data-id]').dataset.id; document.getElementById('tracker-rr-copy').click(); 0`);
+    await waitFor(`window.__clip !== null`);
+    const clip = await js(`window.__clip`);
+    assert.equal(clip.html, [
+      '<p>Jake <i>drew</i> the <b>blade</b>.</p>',
+      '<table style="border-collapse:collapse;margin:0 auto"><tbody><tr><td style="border:1px solid #888;padding:4px 10px">LV 11</td></tr><tr><td style="border:1px solid #888;padding:4px 10px">HP: 40/40</td></tr></tbody></table>',
+      '<hr>',
+      '<p>Later &amp; after.</p>',
+    ].join('\n'));
+    assert.equal(clip.text, 'Jake drew the blade.\n\nLV 11\n\nHP: 40/40\n\n* * *\n\nLater & after.');
+  } finally {
+    await js(`navigator.clipboard.write = window.__clipWrite; 0`);
+    await js(`(() => { const b = document.querySelector('.chapter-body'); b.innerHTML = ${JSON.stringify(saved)}; syncChapter(b, b.closest('.chapter').dataset.id); return 0; })()`);
+  }
+});
+
 test('a stat block copied from the tracker pastes as poetry lines; any other paste stays prose', async () => {
   const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
   try {

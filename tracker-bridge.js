@@ -43,6 +43,8 @@ $('#tabs .tab[data-tab="manuscript"]').after(trackerElement('<button id="side-pa
 // tint every passage the tracker has a reference on (see paintTrackerRefs)
 $('#tabs .tab[data-tab="manuscript"]').before(trackerElement('<span id="tracker-link" class="off" title="Tracker: not connected"></span>'));
 $('#side-pane-toggle').after(trackerElement('<button id="tracker-refs-toggle" data-i18n-title title="Show the tracker’s references in the text (Alt+D); every other tracked passage too (Shift+click or Alt+Shift+D)" aria-pressed="false"><span data-i18n>◎ Refs</span></button>'));
+// the chapter with the caret, copied ready to paste into Royal Road (see copyChapterForRoyalRoad)
+$('#tracker-refs-toggle').after(trackerElement('<button id="tracker-rr-copy" data-i18n-title title="Copy this chapter ready to paste into Royal Road: prose as paragraphs, each stat block as a boxed table"><span data-i18n>⧉ Royal Road</span></button>'));
 
 /* ================================================================== */
 /*  The side pane's two modes                                           */
@@ -1047,6 +1049,55 @@ function jumpToTrackerDarling(did, quote, occurrence) {
 }
 
 /* ================================================================== */
+/*  ⧉ Royal Road: the chapter, ready to paste                           */
+/* ================================================================== */
+
+// Royal Road's editor keeps paragraphs, bold and italics, and bordered
+// tables — the "blue box" its readers know a stat block by. A chapter's
+// poetry paragraphs (how a tracker stat block pastes, and NEO's own
+// set-apart lines) go out as one table per run of them; a scene break as
+// a rule; everything else as a paragraph. Built from the chapter's saved
+// HTML through NEO's own paraRuns/runHtml, so the page isn't touched.
+function royalRoadHtml(chapterHtml) {
+  const paras = parasFromHtml(chapterHtml);
+  const out = [];
+  let box = null; // the rows of the table being built
+  const flush = () => {
+    if (!box) return;
+    out.push('<table style="border-collapse:collapse;margin:0 auto"><tbody>' + box.map((cell) => '<tr><td style="border:1px solid #888;padding:4px 10px">' + cell + '</td></tr>').join('') + '</tbody></table>');
+    box = null;
+  };
+  for (const p of paras) {
+    const inner = p.runs.filter((r) => r.fn === undefined).map((r) => runHtml(r)).join('');
+    if (p.poetry) { (box ??= []).push(inner); continue; }
+    flush();
+    if (p.sceneBreak) { out.push('<hr>'); continue; }
+    out.push('<p' + (p.align ? ' style="text-align:' + escAttr(p.align) + '"' : '') + '>' + inner + '</p>');
+  }
+  flush();
+  return out.join('\n');
+}
+function royalRoadText(chapterHtml) {
+  return parasFromHtml(chapterHtml).map((p) => (p.sceneBreak ? '* * *' : p.text)).join('\n\n');
+}
+async function copyChapterForRoyalRoad() {
+  const chId = caretChapterId() || currentChapterId;
+  if (!chId || !book || !chapterHTML[chId]) { toast(t('Put the cursor in the chapter to copy.')); return; }
+  const html = royalRoadHtml(chapterHTML[chId]);
+  const text = royalRoadText(chapterHTML[chId]);
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/plain': new Blob([text], { type: 'text/plain' }),
+      'text/html': new Blob([html], { type: 'text/html' }),
+    })]);
+    toast(t('Chapter copied for Royal Road.'));
+  } catch {
+    toast(t("Couldn't reach the clipboard."));
+  }
+}
+$('#tracker-rr-copy').addEventListener('click', () => { copyChapterForRoyalRoad(); });
+
+/* ================================================================== */
 /*  Right-click / Ctrl+Shift+A: a new entry in the tracker               */
 /* ================================================================== */
 
@@ -1760,6 +1811,7 @@ window.neoHooks = {
     const onManuscript = name === 'manuscript';
     $('#side-pane-toggle').hidden = !onManuscript;
     $('#tracker-refs-toggle').hidden = !onManuscript;
+    $('#tracker-rr-copy').hidden = !onManuscript;
     $('#tracker-link').hidden = !onManuscript;
     // The tracker starts with the book, not with the first look at the
     // drawer: it follows the text as it's edited (every typing pause sends
