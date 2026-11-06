@@ -8,9 +8,7 @@
 
 (() => {
   const $ = (s) => document.querySelector(s);
-  // NEO's own t() is script-scope; without it, the key with its {vars} filled
-  const t = typeof window.t === 'function' ? window.t : typeof globalThis.t === 'function' ? globalThis.t
-    : (s, vars) => String(s).replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? String(vars[k]) : m));
+  const t = window.NeoI18n.t; // NEO's own translator (app.js destructures it at script scope)
   const bookNow = () => (typeof book !== 'undefined' ? book : null);
   if (!$('#side-pane-toggle') || !window.ReviewCore) return;
 
@@ -68,20 +66,29 @@
   // aside, repeats told apart by the words around them.
   function findSpot(c) {
     const b = bookNow();
-    const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const squash = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ');
     const chapters = (b.chapterOrder || []).filter((id) => document.querySelector(`.chapter[data-id="${id}"] .chapter-body`));
-    const byHeading = chapters.filter((id) => c.heading && norm(chapterHeading(id)) === norm(c.heading));
+    const byHeading = chapters.filter((id) => c.heading && squash(chapterHeading(id)).trim() === squash(c.heading).trim());
     const candidates = byHeading.length ? byHeading : chapters;
-    const needle = norm(c.quote || c.before.slice(-20));
+    const needle = squash(c.quote || c.before.slice(-20)).trim();
     if (!needle) return null;
     let best = null;
     for (const chId of candidates) {
       const body = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
       const model = bodyTextModel(body);
-      const hay = model.text.toLowerCase().replace(/\s+/g, ' ');
+      // searched with runs of whitespace as one space, each squashed
+      // index remembering where it came from in the text itself
+      const lower = model.text.toLowerCase();
+      let hay = '';
+      const from = [];
+      for (let i = 0; i < lower.length; i++) {
+        const ch = lower[i];
+        if (/\s/.test(ch)) { if (hay.endsWith(' ')) continue; hay += ' '; from.push(i); continue; }
+        hay += ch; from.push(i);
+      }
       for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) {
-        const score = agreement(hay.slice(Math.max(0, at - 40), at), norm(c.before)) + agreement(hay.slice(at + needle.length, at + needle.length + 40), norm(c.after), true) + (byHeading.length ? 100 : 0);
-        if (!best || score > best.score) best = { chId, start: at, end: at + needle.length, score, point: !c.quote };
+        const score = agreement(hay.slice(Math.max(0, at - 40), at), squash(c.before)) + agreement(hay.slice(at + needle.length, at + needle.length + 40), squash(c.after), true) + (byHeading.length ? 100 : 0);
+        if (!best || score > best.score) best = { chId, start: from[at], end: from[at + needle.length - 1] + 1, score, point: !c.quote };
       }
     }
     return best;

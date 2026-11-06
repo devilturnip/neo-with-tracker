@@ -1083,8 +1083,11 @@ function royalRoadText(chapterHtml) {
 async function copyChapterForRoyalRoad() {
   const chId = caretChapterId() || currentChapterId;
   if (!chId || !book || !chapterHTML[chId]) { toast(t('Put the cursor in the chapter to copy.')); return; }
-  const html = royalRoadHtml(chapterHTML[chId]);
-  const text = royalRoadText(chapterHTML[chId]);
+  // the page as it reads now, not the copy saved 600 ms after the last keystroke
+  const el = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
+  const source = el ? el.innerHTML : chapterHTML[chId];
+  const html = royalRoadHtml(source);
+  const text = royalRoadText(source);
   try {
     await navigator.clipboard.write([new ClipboardItem({
       'text/plain': new Blob([text], { type: 'text/plain' }),
@@ -1691,10 +1694,10 @@ async function fillTrackerStateLines(key, at, entities) {
       const q = 'chapterId=' + encodeURIComponent(at.chapterId) + '&chapter=' + storyIndex(at.chapterId) + '&passage=' + encodeURIComponent(at.passage)
         + '&kind=' + encodeURIComponent(entity.kind) + '&id=' + encodeURIComponent(entity.id);
       const res = await fetch(trackerReadyUrl + '__state-at?' + q);
-      if (!res.ok) return; // a chapter the tracker hasn't bound yet, say: asked again while the tip is up
-      const reply = await res.json();
-      if (!reply || reply.error) return;
-      line = typeof reply.line === 'string' ? reply.line : '';
+      if (res.status >= 500) return; // the tracker in trouble: asked again while the tip is up
+      // a refusal (a chapter it hasn't bound) is an answer, until the record moves
+      const reply = res.ok ? await res.json() : null;
+      line = reply && typeof reply.line === 'string' ? reply.line : '';
     } catch { return; } // the tracker away: asked again while the tip is up
     if (trackerRefsVersion !== version) return; // the record moved meanwhile: stale
     trackerStateLines.set(cacheKey, line);

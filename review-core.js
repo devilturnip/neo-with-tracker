@@ -126,7 +126,9 @@ async function parseOdt(zip) {
     const text = [...inner.matchAll(/<text:p(?:\s[^>]*)?>([\s\S]*?)<\/text:p>/g)].map((p) => decode(p[1].replace(/<[^>]+>/g, ''))).join('\n').trim();
     comments.set(name, { id: name, author: decode((/<dc:creator>([\s\S]*?)<\/dc:creator>/.exec(inner) || [])[1] || ''), date: decode((/<dc:date>([\s\S]*?)<\/dc:date>/.exec(inner) || [])[1] || ''), text, parent, replies: [] });
     return `<annostart name="${name}"/>`;
-  }).replace(/<office:annotation-end office:name="([^"]*)"\/>/g, '<annoend name="$1"/>');
+  }).replace(/<office:annotation-end office:name="([^"]*)"\/>/g, '<annoend name="$1"/>')
+    // a footnote's own paragraphs would end the paragraph they sit in early
+    .replace(/<text:note[ >][\s\S]*?<\/text:note>/g, '');
   const paras = [];
   for (const m of flat.matchAll(/<text:(p|h)(\s[^>]*)?>([\s\S]*?)<\/text:\1>/g)) {
     const isHeading = m[1] === 'h';
@@ -134,7 +136,7 @@ async function parseOdt(zip) {
     for (const tok of m[3].matchAll(/<annostart name="([^"]*)"\/>|<annoend name="([^"]*)"\/>|<text:s(?:\s+text:c="(\d+)")?\/>|<text:tab\/>|<text:line-break\/>|<[^>]+>|([^<]+)/g)) {
       if (tok[1] !== undefined) parts.push({ start: tok[1] });
       else if (tok[2] !== undefined) parts.push({ end: tok[2] });
-      else if (tok[3] !== undefined || tok[0].startsWith('<text:s')) parts.push({ text: ' '.repeat(Number(tok[3] || 1)) });
+      else if (/^<text:s(\s|\/)/.test(tok[0])) parts.push({ text: ' '.repeat(Number(tok[3] || 1)) });
       else if (tok[0] === '<text:tab/>' || tok[0] === '<text:line-break/>') parts.push({ text: ' ' });
       else if (tok[4] !== undefined) parts.push({ text: decode(tok[4]) });
     }

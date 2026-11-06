@@ -8,7 +8,7 @@
 
 (() => {
   const $ = (s) => document.querySelector(s);
-  const t = (window.t || ((s) => s));
+  const t = window.NeoI18n.t; // NEO's own translator (app.js destructures it at script scope)
   const pane = $('#side-pane');
   if (!pane || !window.EchoCore) return;
   // app.js's own state is script-scope, not window's
@@ -27,7 +27,7 @@
 
   const button = document.createElement('button');
   button.id = 'echo-toggle';
-  button.title = t('Words and phrases this chapter repeats (Alt+E) — counted when opened, never while typing');
+  button.title = t('Words and phrases this chapter repeats ({key}) — counted when opened, never while typing', { key: (typeof IS_MAC !== 'undefined' && IS_MAC) ? '⌃⌥E' : 'Alt+E' });
   button.setAttribute('aria-pressed', 'false');
   button.innerHTML = '<span>≋ ' + t('Echoes') + '</span>';
   ($('#tracker-rr-copy') || $('#tracker-refs-toggle') || $('#side-pane-toggle')).after(button);
@@ -57,10 +57,12 @@
     pane.classList.add('open');
     run();
   }
-  function close() { pane.classList.remove('open'); }
+  const close = () => closeSidePane(); // app.js's own, via the bridge: its bookkeeping too
   button.addEventListener('click', () => (isOpen() ? close() : open()));
+  // Alt+E — on a Mac Option+E is the acute accent's dead key, so Ctrl+Option+E there
+  const mac = typeof IS_MAC !== 'undefined' && IS_MAC;
   document.addEventListener('keydown', (e) => {
-    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.code !== 'KeyE') return;
+    if (e.code !== 'KeyE' || !e.altKey || e.metaKey || e.shiftKey || (mac ? !e.ctrlKey : e.ctrlKey)) return;
     if (button.hidden) return;
     e.preventDefault();
     if (isOpen()) close(); else open();
