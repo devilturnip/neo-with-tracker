@@ -1003,6 +1003,47 @@ const pasteAtEnd = (html, text) => js(`(() => {
 })()`);
 
 /* ================================================================== */
+/*  Reader comments                                                     */
+/* ================================================================== */
+
+test('reader comments come back as a summary first, then as marks and stickies at their words; one undo takes them back', async () => {
+  const saved = await js(`document.querySelector('.chapter-body').innerHTML`);
+  const chId = await chapterId();
+  const heading = await js(`chapterHeading(${JSON.stringify(chId)})`);
+  ipcMain.removeHandler('review:import');
+  ipcMain.handle('review:import', () => ({ file: 'readers.docx', comments: [
+    { author: 'Beth', date: '2026-11-01T10:00:00Z', text: 'Which blade?', replies: [{ author: 'Jake', date: '2026-11-02', text: 'Mine.' }], quote: 'Hello', before: '', after: '.', heading, paragraph: 'Hello.' },
+    { author: 'Beth', date: '2026-11-01T10:05:00Z', text: 'Nowhere.', replies: [], quote: 'not in this book', before: 'zzz ', after: '', heading: '', paragraph: '' },
+  ] }));
+  try {
+    await js(`(() => { const b = document.querySelector('.chapter-body'); b.innerHTML = '<p>Hello. Hello again.</p>'; syncChapter(b, b.closest('.chapter').dataset.id); currentChapterId = b.closest('.chapter').dataset.id; return 0; })()`);
+    const before = await js(`stickies.length`);
+    await js(`document.getElementById('review-toggle').click(); 0`);
+    await waitFor(`!document.getElementById('review-menu').hidden`);
+    await js(`[...document.querySelectorAll('#review-menu button')].find((b) => b.textContent.startsWith('Import')).click(); 0`);
+    await waitFor(`document.querySelector('.review-summary')`);
+    assert.equal(await js(`document.querySelector('.review-summary .rv-count').textContent`), '1 found in the text · 1 not found');
+    assert.equal(await js(`document.querySelector('.chapter-body .ph-mark')`), null, 'nothing placed before Place');
+    await js(`document.querySelector('.review-summary .rv-place').click(); 0`);
+    await waitFor(`document.querySelector('.chapter-body .ph-mark')`);
+    const mark = await js(`(() => { const m = document.querySelector('.chapter-body .ph-mark'); return { before: m.previousSibling.textContent, sid: m.dataset.sid }; })()`);
+    assert.equal(mark.before, 'Hello', 'the mark sits at the end of the words commented on, the first Hello');
+    const texts = await js(`stickies.slice(${before}).map((s) => s.text)`);
+    assert.equal(texts.length, 2, 'one placed, one filed on its chapter');
+    assert.equal(texts[0], '“Hello” — Beth 2026-11-01: Which blade?\n  ↳ Jake 2026-11-02: Mine.');
+    assert.ok(texts[1].endsWith('(not found in the text)'));
+    assert.equal(await js(`stickies.find((s) => s.id === ${JSON.stringify(mark.sid)}).chapterId`), chId);
+    // one undo step takes the mark back
+    await js(`structuralUndo()`);
+    await waitFor(`!document.querySelector('.chapter-body .ph-mark')`);
+  } finally {
+    ipcMain.removeHandler('review:import');
+    await js(`(() => { stickies.splice(${await js(`stickies.length`)}); return 0; })()`).catch(() => {});
+    await js(`(() => { stickies = stickies.filter((s) => !/Beth/.test(s.text)); writeSidecar(book.id, 'stickies', stickies); renderStickies(); const b = document.querySelector('.chapter-body'); b.innerHTML = ${JSON.stringify(saved)}; syncChapter(b, b.closest('.chapter').dataset.id); return 0; })()`);
+  }
+});
+
+/* ================================================================== */
 /*  Echoes                                                              */
 /* ================================================================== */
 

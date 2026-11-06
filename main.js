@@ -2417,6 +2417,7 @@ function dailyBackup() {
 }
 let backupRunning = false;
 require('./tracker-main.js')({ app, ipcMain, logError }); // litrpg-tracker: starts/finds its dev server for the renderer's pane
+require('./review-main.js')({ ipcMain, dialog, BrowserWindow, logError }); // litrpg-tracker: reader comments out of a review copy
 
 // ---------------------------------------------------------------------------
 // Window

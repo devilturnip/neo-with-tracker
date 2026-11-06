@@ -91,6 +91,26 @@ body.light #tracker-refs-toggle.active { color: var(--accent); }
 .ui-zoomed #echo-toggle { white-space: nowrap; }
 body.light #echo-toggle:hover { color: #1c1a17; }
 body.light #echo-toggle.active { color: var(--accent); }
+/* ✎ Review (review-bridge.js): the button, its menu, the import summary */
+#review-toggle { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: 10px; }
+#review-toggle:hover { color: #ddd; }
+#review-toggle[hidden] { display: none; }
+.ui-zoomed #review-toggle { white-space: nowrap; }
+body.light #review-toggle:hover { color: #1c1a17; }
+#review-menu { position: fixed; z-index: 960; list-style: none; margin: 0; padding: 4px 0; background: #262626; border: 1px solid #3a3a3a; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+#review-menu[hidden] { display: none; }
+#review-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: #ddd; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; padding: 6px 16px; cursor: pointer; white-space: nowrap; }
+#review-menu button:hover { background: rgba(122, 150, 230, 0.16); }
+body.light #review-menu { background: #fff; border-color: #d9d4ca; }
+body.light #review-menu button { color: #2b2926; }
+.review-summary h3 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin: 12px 0 4px; opacity: 0.7; }
+.review-summary .rv-count { opacity: 0.8; font-size: 13px; }
+.review-summary .rv-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; }
+.review-summary .rv-list li { padding: 6px 0; border-bottom: 1px solid rgba(128,128,128,0.2); }
+.review-summary .rv-text { opacity: 0.85; }
+.review-summary .rv-note { font-size: 11px; opacity: 0.6; }
+.review-summary .rv-loose { display: block; margin-top: 8px; font-size: 12px; }
+.review-summary .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .echo-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; margin: 10px 0; }
 .echo-bar select { font-size: 12px; }
 .echo-count { margin-left: auto; opacity: 0.7; }

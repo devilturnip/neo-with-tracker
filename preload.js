@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('neo', {
   fullscreenToggle: () => ipcRenderer.invoke('fullscreen:toggle'),
   trackerEnsure: () => ipcRenderer.invoke('tracker:ensure'),
   trackerRestart: () => ipcRenderer.invoke('tracker:restart'), // litrpg-tracker: a tracker update swapped in
+  reviewImport: () => ipcRenderer.invoke('review:import'), // litrpg-tracker: reader comments out of a review copy
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   pocketLibrary: () => ipcRenderer.invoke('library:pocket'),
   usePocketLibrary: () => ipcRenderer.invoke('library:usePocket'),
