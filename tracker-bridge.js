@@ -1575,7 +1575,7 @@ let trackerRefTip = null;
 let trackerRefTipFrame = 0;
 let trackerRefTipShowing = null; // the passage key the tip is up for
 let trackerStateTimer = null;
-const trackerStateLines = new Map(); // `${version}|${chapterId}|${passage}|${kind}:${id}` -> line, for the record version it was read at
+const trackerStateLines = new Map(); // `${chapterId}|${passage}|${kind}:${id}` -> line, cleared when the record version moves
 let trackerStateLinesVersion = null;
 function hideTrackerRefTip() {
   if (trackerRefTip) trackerRefTip.hidden = true;
@@ -1592,7 +1592,7 @@ function showTrackerRefTip(entities, x, y, at) {
   }
   if (trackerStateLinesVersion !== trackerRefsVersion) { trackerStateLines.clear(); trackerStateLinesVersion = trackerRefsVersion; }
   const key = at ? at.chapterId + '|' + at.passage : null;
-  const lineKey = (entity) => trackerRefsVersion + '|' + key + '|' + entity.kind + ':' + entity.id;
+  const lineKey = (entity) => key + '|' + entity.kind + ':' + entity.id;
   const missing = () => key && entities.some((e) => !trackerStateLines.has(lineKey(e)));
   // the same passage, the same entities, the same record: the tip stays, only moved — a line
   // still missing (the tracker was away when it was asked) is asked for again
@@ -1633,15 +1633,19 @@ async function fillTrackerStateLines(key, at, entities) {
   if (!trackerReadyUrl) return;
   const version = trackerRefsVersion;
   await Promise.all(entities.map(async (entity) => {
-    const cacheKey = version + '|' + key + '|' + entity.kind + ':' + entity.id;
+    const cacheKey = key + '|' + entity.kind + ':' + entity.id;
     if (trackerStateLines.has(cacheKey)) return;
     let line = '';
     try {
       const q = 'chapterId=' + encodeURIComponent(at.chapterId) + '&chapter=' + storyIndex(at.chapterId) + '&passage=' + encodeURIComponent(at.passage)
         + '&kind=' + encodeURIComponent(entity.kind) + '&id=' + encodeURIComponent(entity.id);
-      const reply = await (await fetch(trackerReadyUrl + '__state-at?' + q)).json();
-      line = reply && typeof reply.line === 'string' ? reply.line : '';
-    } catch { return; } // asked again on the next hover
+      const res = await fetch(trackerReadyUrl + '__state-at?' + q);
+      if (!res.ok) return; // a chapter the tracker hasn't bound yet, say: asked again while the tip is up
+      const reply = await res.json();
+      if (!reply || reply.error) return;
+      line = typeof reply.line === 'string' ? reply.line : '';
+    } catch { return; } // the tracker away: asked again while the tip is up
+    if (trackerRefsVersion !== version) return; // the record moved meanwhile: stale
     trackerStateLines.set(cacheKey, line);
     if (!line || !trackerRefTip || trackerRefTip.hidden || !trackerRefTipShowing || !trackerRefTipShowing.startsWith(key + '|')) return;
     const row = [...trackerRefTip.children].find((el) => el.firstChild && el.firstChild.textContent === entityLine(entity));
