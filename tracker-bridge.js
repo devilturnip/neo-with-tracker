@@ -538,13 +538,14 @@ function trackerLinkIs(state, reason) {
   if (state === 'up') {
     if (trackerLink === 'up') return;
     trackerLink = 'up'; trackerRefusal = null;
-    toast(t('The tracker is back; catching up.'));
+    if (!trackerRestarting) toast(t('The tracker is back; catching up.'));
     setTimeout(() => { sendManuscriptText(); sendAllWordCounts(true); }, 0); // once the push that got through has been marked sent; the counts too, edited meanwhile
   } else if (state === 'refused') {
     if (trackerLink !== 'refused' || (reason !== undefined && trackerRefusal !== reason)) toast(t('The tracker refused: ') + (reason ?? trackerRefusal ?? ''), 8000);
     trackerLink = 'refused'; if (reason !== undefined) trackerRefusal = reason;
   } else {
-    if (trackerLink !== 'down') toast(t("The tracker isn't answering; changes will be sent when it's back."));
+    // an update being swapped in is a planned gap, said once it's done
+    if (trackerLink !== 'down' && !trackerRestarting) toast(t("The tracker isn't answering; changes will be sent when it's back."));
     trackerLink = 'down';
   }
 }
@@ -829,7 +830,6 @@ async function watchTrackerMailbox() {
   }
   if (trackerMailWatch === watch) trackerMailWatch = null;
 }
-// eslint-disable-next-line no-unused-vars -- the e2e harness stops the watcher between stubs
 function stopTrackerMailbox() {
   if (trackerMailWatch) { trackerMailWatch.abort(); trackerMailWatch = null; }
   trackerMailVersion = null;
@@ -842,6 +842,7 @@ function stopTrackerMailbox() {
 // its own (the server counts the lapse as mail; a local timer backs it).
 let trackerEditing = false;
 let trackerEditingLapse = null;
+let trackerPageBusyUntil = 0; // a dialog open on the tracker page, pane open or not
 function handleTrackerMail(mail) {
   const g = mail.goto;
   if (g && typeof g.chapter === 'number') {
@@ -849,6 +850,7 @@ function handleTrackerMail(mail) {
     else jumpToTrackerGoto(g.chapter, g.quote, g.occurrence, g.chapterId, typeof g.start === 'number' ? { start: g.start, end: g.end } : null);
   }
   if (mail.wantsManuscript) sendManuscriptText();
+  trackerPageBusyUntil = mail.editing && typeof mail.editingUntil === 'number' ? mail.editingUntil : 0;
   const pane = $('#side-pane');
   trackerEditing = !!mail.editing && pane.dataset.mode === 'tracker' && pane.classList.contains('open');
   clearTimeout(trackerEditingLapse);
@@ -875,6 +877,60 @@ window.addEventListener('keydown', (e) => {
   trackerEditing = false; // let go of the drawer now, not at the next mail
   if (pane.dataset.pinned !== '1') closeSidePane();
 }, true);
+/* ================================================================== */
+/*  A tracker update, swapped in without quitting NEO                    */
+/* ================================================================== */
+
+// NEO's main process builds a new commit of the tracker's code beside the
+// running server (tracker-main.js) and says so here. It goes in at a
+// quiet moment — no dialog open on the tracker page, the palette closed,
+// no typing for a couple of seconds — so nothing in hand is lost: the
+// server restarts on the new build, the pane reloads, and what the server
+// only held in memory (the chapter, the counts, the selection; the text it
+// keeps on disk anyway) is sent again. Its Undo list starts afresh, as at
+// any start.
+let trackerRestarting = false;
+let trackerUpdateTimer = null;
+const trackerQuiet = () => !palette && Date.now() >= trackerPageBusyUntil && !trackerEditing && performance.now() - trackerLastInput >= 2000;
+
+async function applyTrackerUpdate() {
+  trackerUpdateTimer = null;
+  if (!trackerReadyUrl) return; // not running: the next start is on the new build anyway
+  if (!trackerQuiet()) { trackerUpdateTimer = setTimeout(applyTrackerUpdate, 2000); return; }
+  trackerRestarting = true;
+  let result;
+  try {
+    stopTrackerMailbox();
+    result = await window.neo.trackerRestart();
+  } catch { result = { ok: false }; }
+  if (!result || !result.ok) {
+    trackerRestarting = false;
+    toast(t('Tracker update failed; restart NEO to pick it up.'), 8000);
+    trackerPanePromise = null;
+    ensureTrackerPane();
+    return;
+  }
+  trackerReadyUrl = result.url.replace(/\/?$/, '/');
+  watchTrackerMailbox();
+  if (trackerFrame) trackerFrame.src = trackerReadyUrl + '?embed=neo&v=' + Date.now(); // a fresh load, even at the same address
+  // everything again: the new server knows only what it keeps on disk
+  trackerSentText.clear(); trackerSentDarlings = null; trackerSentOrder = null;
+  trackerNotifiedChapter = null; trackerNotifiedSelection = null;
+  await sendManuscriptText();
+  notifyTrackerOfChapter(true);
+  sendAllWordCounts(true);
+  postTrackerSelection();
+  if (trackerRefsOn) paintTrackerRefs('version');
+  trackerRestarting = false;
+  toast(t('Tracker updated.'));
+}
+
+window.neo.onMenu((msg) => {
+  if (!msg || msg.type !== 'trackerUpdate') return;
+  if (msg.failed) { toast(t("A tracker update didn't build; still on the previous version."), 8000); return; }
+  if (!trackerUpdateTimer) trackerUpdateTimer = setTimeout(applyTrackerUpdate, 0);
+});
+
 // The reverse of storyIndex(): which chapter in the open book has this
 // number, if any.
 function chapterIdForNumber(n) {

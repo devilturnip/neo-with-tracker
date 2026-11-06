@@ -9,7 +9,7 @@
 
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -162,6 +162,7 @@ const reset = () => js(`(() => {
   trackerLink = 'up'; trackerRefusal = null; trackerFailing.clear(); document.getElementById('hint').hidden = true;
   document.getElementById('tracker-link').className = 'up'; trackerCountsSentFor = null;
   clearTimeout(trackerNotifySelectionTimer); clearTimeout(trackerSettleTimer); clearTimeout(trackerEditingLapse);
+  clearTimeout(trackerUpdateTimer); trackerUpdateTimer = null; trackerRestarting = false; trackerPageBusyUntil = 0;
   clearTimeout(trackerNotifyTimer); clearTimeout(trackerNotifyWordsTimer); return 0;
 })()`);
 
@@ -991,6 +992,68 @@ test('a stat block copied from the tracker pastes as poetry lines; any other pas
   } finally {
     await js(`(() => { const b = document.querySelector('.chapter-body'); b.innerHTML = ${JSON.stringify(saved)}; syncChapter(b, b.closest('.chapter').dataset.id); return 0; })()`);
   }
+});
+
+/* ================================================================== */
+/*  A tracker update swapped in                                         */
+/* ================================================================== */
+
+// tracker:restart answered here in the main process, as tracker-main.js
+// would once it has swapped the new build in; the toasts the page shows, recorded.
+const restarts = { count: 0, reply: { ok: true, url: 'http://stub/' } };
+const withRestartStub = async (fn) => {
+  ipcMain.removeHandler('tracker:restart');
+  ipcMain.handle('tracker:restart', () => { restarts.count++; return restarts.reply; });
+  await js(`window.__toasts = []; window.__toast = toast; toast = (m, ...rest) => { window.__toasts.push(m); return window.__toast(m, ...rest); }; 0`);
+  restarts.count = 0;
+  try { return await fn(); } finally {
+    await js(`toast = window.__toast; 0`);
+    ipcMain.removeHandler('tracker:restart');
+  }
+};
+const toasts = () => js(`window.__toasts`);
+
+test('a tracker update waits for the page to be quiet, then reloads the pane and sends everything again', async () => {
+  await withRestartStub(() => withStub(`{
+    '__neo-mailbox': () => ({ version: 1, writes: 1, goto: null, wantsManuscript: false, editing: Date.now() < window.__stub.state.busyUntil, editingUntil: window.__stub.state.busyUntil }),
+  }`, async () => {
+    await js(`ensureTrackerPane()`);
+    await js(`currentChapterId = document.querySelector('.chapter[data-id]').dataset.id; 0`); // the caret's chapter, as writing would set it
+    // a dialog open on the tracker page for the next 1.5 s
+    await setStub({ busyUntil: await js(`Date.now() + 1500`) });
+    await tick(400); // the mailbox has said so
+    await clearCalls();
+    const before = await js(`trackerFrame.src`);
+    wc.send('menu', { type: 'trackerUpdate' });
+    await tick(700);
+    assert.equal(restarts.count, 0, 'not while the dialog is open');
+    await waitFor(`window.__toasts.includes('Tracker updated.')`, 6000);
+    assert.equal(restarts.count, 1);
+    assert.notEqual(await js(`trackerFrame.src`), before);
+    assert.match(await js(`trackerFrame.src`), /^http:\/\/stub\/\?embed=neo&v=\d+$/, 'the pane loaded afresh');
+    const pushes = (await calls('__neo-manuscript-text')).map((c) => JSON.parse(c.body));
+    assert.equal(pushes[0].chapters.length, await js(`book.chapterOrder.filter(isStoryChapter).length`), 'the whole book again ' + JSON.stringify(pushes.map((p) => p.chapters.map((c) => c.id))));
+    assert.deepEqual((await calls('__neo-chapter')).map((c) => new URL(c.url).searchParams.get('id')), [await chapterId()], 'the chapter');
+    assert.ok((await calls('__neo-wordcount')).length >= 1, 'the word counts');
+    const said = (await toasts()).filter((m) => /tracker/i.test(m)); // NEO's own first-run hints aside
+    assert.deepEqual(said, ['Tracker updated.'], "no \"isn't answering\" for the planned gap");
+  }, { busyUntil: 0 }));
+});
+
+test("a tracker update that didn't build says so once and changes nothing; one that fails to restart says to restart NEO", async () => {
+  await withRestartStub(() => withStub(`{ ${mailbox()} }`, async () => {
+    wc.send('menu', { type: 'trackerUpdate', failed: true });
+    const said = async () => (await toasts()).filter((m) => /tracker/i.test(m));
+    await waitFor(`window.__toasts.some((m) => /tracker/i.test(m))`);
+    assert.deepEqual(await said(), ["A tracker update didn't build; still on the previous version."]);
+    assert.equal(restarts.count, 0);
+    restarts.reply = { ok: false, reason: 'swap-failed' };
+    try {
+      wc.send('menu', { type: 'trackerUpdate' });
+      await waitFor(`window.__toasts.filter((m) => /tracker/i.test(m)).length === 2`, 6000);
+      assert.equal((await said())[1], 'Tracker update failed; restart NEO to pick it up.');
+    } finally { restarts.reply = { ok: true, url: 'http://stub/' }; }
+  }));
 });
 
 /* ================================================================== */
